@@ -1,0 +1,34 @@
+# References:
+# https://packaging.python.org/en/latest/specifications/declaring-project-metadata/
+# https://packaging.python.org/en/latest/guides/packaging-namespace-packages/#native-namespace-packages
+# https://packaging.python.org/en/latest/guides/single-sourcing-package-version/
+# https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "freecad-classy_foundry"
+dynamic = ["version"]
+description = "A FreeCAD workbench to interactively and visually build classy_blocks meshes"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE-Code", "LICENSE-Assets"]
+keywords = ["classy_blocks", "OpenFOAM", "blockMesh"]
+maintainers = [{ name = "Nejc Jurkovič", email = "nejc.jurkovic@proton.me" }]
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "nptyping", "numba", "classy_blocks"]
+
+[dependency-groups]
+dev = ["PySide6", "ruff", "codespell", "freecad-stubs"]
+
+# [project.urls]
+# source = "https://github.com/damogranlabs/classy_foundry"
+
+[tool.hatch.version]
+path = "freecad/classy_foundry/version.py"
+# Hatchling looks for __version__ = "..." by default
+
+[tool.hatch.build.targets.wheel]
+packages = ["freecad"]

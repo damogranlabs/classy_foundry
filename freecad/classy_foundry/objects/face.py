@@ -1,0 +1,90 @@
+"""Tier 1 'Face' Document Object: a thin wrapper around classy_blocks' Face."""
+
+import classy_blocks as cb
+import FreeCAD
+import Part
+
+
+class RecordingFace(cb.Face):
+    """A cb.Face that remembers its constructor args for later codegen."""
+
+    def __init__(self, points):
+        self.points_arg = points
+        super().__init__(points, edges=None)
+
+    def to_lines(self, varname: str) -> list[str]:
+        return [f"{varname} = cb.Face({[list(p) for p in self.points_arg]})"]
+
+
+class FaceProxy:
+    """Proxy for a Part::FeaturePython object representing a classy_blocks Face."""
+
+    def __init__(self, obj):
+        obj.Proxy = self
+        defaults = (
+            FreeCAD.Vector(0, 0, 0),
+            FreeCAD.Vector(1, 0, 0),
+            FreeCAD.Vector(1, 1, 0),
+            FreeCAD.Vector(0, 1, 0),
+        )
+        for i, default in enumerate(defaults, start=0):
+            obj.addProperty(
+                "App::PropertyVector",
+                f"Point{i}",
+                "ClassyFoundry",
+                f"Corner {i} of the face",
+            )
+            setattr(obj, f"Point{i}", default)
+
+    def execute(self, obj):
+        points = [
+            [obj.Point0.x, obj.Point0.y, obj.Point0.z],
+            [obj.Point1.x, obj.Point1.y, obj.Point1.z],
+            [obj.Point2.x, obj.Point2.y, obj.Point2.z],
+            [obj.Point3.x, obj.Point3.y, obj.Point3.z],
+        ]
+        face = RecordingFace(points)
+        self.face = face
+        obj.Shape = self._tier_b_shape(face)
+
+    @staticmethod
+    def _tier_b_shape(face: RecordingFace) -> Part.Shape:
+        """Flat polygon preview (Tier B)."""
+        corners = [FreeCAD.Vector(*p.position) for p in face.points]
+        wire = Part.makePolygon([*corners, corners[0]])
+        return Part.Face(wire)
+
+    def __getstate__(self):
+        return None
+
+    def __setstate__(self, state):
+        return None
+
+
+class FaceViewProvider:
+    """Minimal ViewProvider so the Face's Shape renders in the 3D view."""
+
+    def __init__(self, vobj):
+        vobj.Proxy = self
+
+    def attach(self, vobj):
+        self.Object = vobj.Object
+
+    def getIcon(self):
+        return ""
+
+    def __getstate__(self):
+        return None
+
+    def __setstate__(self, state):
+        return None
+
+
+def make_face(doc, name="Face"):
+    """Create a new Face Document Object in `doc`, at document root."""
+    obj = doc.addObject("Part::FeaturePython", name)
+    FaceProxy(obj)
+    if FreeCAD.GuiUp:
+        FaceViewProvider(obj.ViewObject)
+    doc.recompute()
+    return obj
