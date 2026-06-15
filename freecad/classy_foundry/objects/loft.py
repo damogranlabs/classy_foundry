@@ -4,10 +4,10 @@ import classy_blocks as cb
 import FreeCAD
 
 from .recording import (
+    OperationProxyBase,
+    OperationViewProviderBase,
     RecordingOperationMixin,
     add_chop_patch_properties,
-    apply_chop_patch,
-    loft_preview_shape,
 )
 
 
@@ -26,8 +26,10 @@ class RecordingLoft(RecordingOperationMixin, cb.Loft):
         return lines
 
 
-class LoftProxy:
+class LoftProxy(OperationProxyBase):
     """Proxy for a Part::FeaturePython object representing a classy_blocks Loft."""
+
+    FACE_LINKS = ("BottomFace", "TopFace")
 
     def __init__(self, obj):
         obj.Proxy = self
@@ -35,51 +37,17 @@ class LoftProxy:
         obj.addProperty("App::PropertyLink", "TopFace", "ClassyFoundry", "Top face")
         add_chop_patch_properties(obj)
 
-    def execute(self, obj):
-        bottom_obj = obj.BottomFace
-        top_obj = obj.TopFace
-        if bottom_obj is None or top_obj is None:
-            return
-        for face_obj in (bottom_obj, top_obj):
-            if not hasattr(face_obj.Proxy, "face"):
-                face_obj.recompute(True)
-        if not hasattr(bottom_obj.Proxy, "face") or not hasattr(top_obj.Proxy, "face"):
-            return
-
-        loft = RecordingLoft(
-            bottom_obj.Proxy.face,
-            top_obj.Proxy.face,
-            bottom_obj.Name.lower(),
-            top_obj.Name.lower(),
+    def build_operation(self, obj, bottom_face, top_face):
+        return RecordingLoft(
+            bottom_face,
+            top_face,
+            obj.BottomFace.Name.lower(),
+            obj.TopFace.Name.lower(),
         )
-        apply_chop_patch(obj, loft)
-        self.operation = loft
-        obj.Shape = loft_preview_shape(loft)
-
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
 
 
-class LoftViewProvider:
+class LoftViewProvider(OperationViewProviderBase):
     """Minimal ViewProvider so the Loft's Shape renders in the 3D view."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def getIcon(self):
-        return ""
-
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
 
 
 def make_loft(doc, name="Loft"):

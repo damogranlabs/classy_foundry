@@ -208,26 +208,28 @@ use `debug.vtk` in ParaView today, just rendered natively.
 Mirrors classy_blocks' actual structure (see also Layer 1 unification above,
 which collapses these from 4 families to 2 over time):
 
-- **Tier 0 — Points**: lightweight Document Object (likely `Part::Vertex`-
-  derived) wrapping a single coordinate — selectable/draggable in the 3D view,
-  giving classy_blocks' otherwise-anonymous coordinate args (Box corners, Face
-  points, etc.) an identity that can be shared/referenced. Tier 1/2
-  point-valued constructor-arg properties become `App::PropertyLink`/
+- **Tier 0 — Points (deferred)**: a lightweight, shareable Document Object
+  wrapping a single coordinate, giving classy_blocks' otherwise-anonymous
+  coordinate args (Box corners, Face points, etc.) an identity that can be
+  shared/referenced and expression-bound to a `Spreadsheet`. Tier 1/2
+  point-valued constructor-arg properties would become `App::PropertyLink`/
   `PropertyLinkSub` to a Tier 0 Point, with a literal-value fallback for the
-  common case. Coordinates are plain `PropertyFloat`s, optionally
-  expression-bound to a `Spreadsheet` cell alias for named, reusable
-  parameters (classy_blocks scripts are conventionally parametric via a
-  leading constants block, so this maps naturally).
+  common case. Out of scope for now — Tier 1/2 objects use plain
+  `App::PropertyVector`s for coordinates; revisit once Tier 1/2 are more
+  fleshed out and the connectivity/codegen motivations below become concrete
+  pain points:
   - **Codegen for shared points**: a Point referenced by multiple constructs
     (or a coordinate expression-bound to a spreadsheet cell referenced from
-    multiple Points) emits as one shared Python variable, used in each
+    multiple Points) would emit as one shared Python variable, used in each
     construct's call — preserving the "shared point" relationship as ordinary
     Python variable reuse (classy_blocks has no native shared-point concept,
     but this produces idiomatic, DRY output). A parameters block at the top of
-    the generated script mirrors the spreadsheet cells actually referenced.
-  - **Connectivity motivation**: shared Tier 0 Points ensure block corners that
-    should coincide for `mesh.assemble()`'s vertex-merging actually do exactly
-    — no floating-point near-misses from independently-typed literals.
+    the generated script would mirror the spreadsheet cells actually
+    referenced.
+  - **Connectivity motivation**: shared Tier 0 Points would ensure block
+    corners that should coincide for `mesh.assemble()`'s vertex-merging
+    actually do exactly — no floating-point near-misses from independently
+    -typed literals.
 - **Tier 1 — 2D reusable profiles**: `Face` / `Sketch`. No chop/patch/cell info,
   purely geometric. Modeled like a FreeCAD Sketch object: standalone, reusable,
   referenceable by multiple Tier 2 objects (classy_blocks explicitly supports
@@ -256,13 +258,14 @@ Maps onto the same tiers as separate commands, not new object types:
 
 ## v1 scope for classy_foundry
 
-One full vertical slice through **Tier 0 → Tier 1 → Tier 2 → Root**: `Point` +
-`Face` + `Box`/`Loft`/`Extrude`/`Revolve`/`Wedge` + `Mesh`. This establishes the
-Document Object base patterns — Properties-as-source-of-truth with
-`execute()`-rebuild, link properties (including Tier 0 point links),
+One full vertical slice through **Tier 1 → Tier 2 → Root**: `Face` +
+`Box`/`Loft`/`Extrude`/`Revolve`/`Wedge` + `Mesh` (Tier 0 Points deferred, see
+above). This establishes the Document Object base patterns —
+Properties-as-source-of-truth with `execute()`-rebuild, link properties,
 chop/patch sub-editor, two-tier preview, script codegen with topological
 ordering via FreeCAD's dependency graph — so that Sketch/Shape/Stack/Assembly/
-Optimizer slot into the *same* patterns later rather than needing new ones.
+Optimizer/Tier 0 Points slot into the *same* patterns later rather than
+needing new ones.
 
 ---
 

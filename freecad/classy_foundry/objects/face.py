@@ -2,7 +2,8 @@
 
 import classy_blocks as cb
 import FreeCAD
-import Part
+
+from .recording import FaceProxyBase, ViewProviderBase
 
 
 class RecordingFace(cb.Face):
@@ -16,7 +17,7 @@ class RecordingFace(cb.Face):
         return [f"{varname} = cb.Face({[list(p) for p in self.points_arg]})"]
 
 
-class FaceProxy:
+class FaceProxy(FaceProxyBase):
     """Proxy for a Part::FeaturePython object representing a classy_blocks Face."""
 
     def __init__(self, obj):
@@ -36,48 +37,18 @@ class FaceProxy:
             )
             setattr(obj, f"Point{i}", default)
 
-    def execute(self, obj):
+    def build_face(self, obj):
         points = [
             [obj.Point0.x, obj.Point0.y, obj.Point0.z],
             [obj.Point1.x, obj.Point1.y, obj.Point1.z],
             [obj.Point2.x, obj.Point2.y, obj.Point2.z],
             [obj.Point3.x, obj.Point3.y, obj.Point3.z],
         ]
-        face = RecordingFace(points)
-        self.face = face
-        obj.Shape = self._tier_b_shape(face)
-
-    @staticmethod
-    def _tier_b_shape(face: RecordingFace) -> Part.Shape:
-        """Flat polygon preview (Tier B)."""
-        corners = [FreeCAD.Vector(*p.position) for p in face.points]
-        wire = Part.makePolygon([*corners, corners[0]])
-        return Part.Face(wire)
-
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
+        return RecordingFace(points)
 
 
-class FaceViewProvider:
+class FaceViewProvider(ViewProviderBase):
     """Minimal ViewProvider so the Face's Shape renders in the 3D view."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def getIcon(self):
-        return ""
-
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
 
 
 def make_face(doc, name="Face"):

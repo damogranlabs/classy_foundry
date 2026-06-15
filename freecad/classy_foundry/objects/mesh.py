@@ -6,8 +6,10 @@ import tempfile
 import classy_blocks as cb
 import FreeCAD
 
+from .recording import ProxyBase, ViewProviderBase
 
-class MeshProxy:
+
+class MeshProxy(ProxyBase):
     """Proxy for an App::FeaturePython object representing a classy_blocks Mesh."""
 
     def __init__(self, obj):
@@ -73,21 +75,9 @@ class MeshProxy:
         lines.append(f"mesh.write({obj.WritePath!r})")
         return lines
 
-    def __getstate__(self):
-        return None
 
-    def __setstate__(self, state):
-        return None
-
-
-class MeshViewProvider:
+class MeshViewProvider(ViewProviderBase):
     """ViewProvider that nests the Mesh's Elements under it in the tree view."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
 
     def claimChildren(self):
         return self.Object.Elements
@@ -100,14 +90,10 @@ class MeshViewProvider:
         FreeCADGui.Control.showDialog(MeshTaskPanel(vobj.Object))
         return True
 
-    def getIcon(self):
-        return ""
 
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
+def find_mesh(doc):
+    """Return the document's Mesh object, or None if it doesn't have one yet."""
+    return next((o for o in doc.Objects if isinstance(getattr(o, "Proxy", None), MeshProxy)), None)
 
 
 def make_mesh(doc, name="Mesh"):

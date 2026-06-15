@@ -4,10 +4,10 @@ import classy_blocks as cb
 import FreeCAD
 
 from .recording import (
+    OperationProxyBase,
+    OperationViewProviderBase,
     RecordingOperationMixin,
     add_chop_patch_properties,
-    apply_chop_patch,
-    loft_preview_shape,
 )
 
 
@@ -26,8 +26,10 @@ class RecordingExtrude(RecordingOperationMixin, cb.Extrude):
         return lines
 
 
-class ExtrudeProxy:
+class ExtrudeProxy(OperationProxyBase):
     """Proxy for a Part::FeaturePython object representing a classy_blocks Extrude."""
+
+    FACE_LINKS = ("Base",)
 
     def __init__(self, obj):
         obj.Proxy = self
@@ -39,45 +41,13 @@ class ExtrudeProxy:
         ).Amount = FreeCAD.Vector(0, 0, 1)
         add_chop_patch_properties(obj)
 
-    def execute(self, obj):
-        base_obj = obj.Base
-        if base_obj is None:
-            return
-        if not hasattr(base_obj.Proxy, "face"):
-            base_obj.recompute(True)
-        if not hasattr(base_obj.Proxy, "face"):
-            return
-
+    def build_operation(self, obj, base_face):
         amount = [obj.Amount.x, obj.Amount.y, obj.Amount.z]
-        extrude = RecordingExtrude(base_obj.Proxy.face, amount, base_obj.Name.lower())
-        apply_chop_patch(obj, extrude)
-        self.operation = extrude
-        obj.Shape = loft_preview_shape(extrude)
-
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
+        return RecordingExtrude(base_face, amount, obj.Base.Name.lower())
 
 
-class ExtrudeViewProvider:
+class ExtrudeViewProvider(OperationViewProviderBase):
     """Minimal ViewProvider so the Extrude's Shape renders in the 3D view."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def getIcon(self):
-        return ""
-
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
 
 
 def make_extrude(doc, name="Extrude"):

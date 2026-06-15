@@ -2,9 +2,13 @@
 
 import classy_blocks as cb
 import FreeCAD
-import Part
 
-from .recording import RecordingOperationMixin, add_chop_patch_properties, apply_chop_patch
+from .recording import (
+    OperationProxyBase,
+    OperationViewProviderBase,
+    RecordingOperationMixin,
+    add_chop_patch_properties,
+)
 
 
 class RecordingBox(RecordingOperationMixin, cb.Box):
@@ -21,7 +25,7 @@ class RecordingBox(RecordingOperationMixin, cb.Box):
         return lines
 
 
-class BoxProxy:
+class BoxProxy(OperationProxyBase):
     """Proxy for a Part::FeaturePython object representing a classy_blocks Box."""
 
     def __init__(self, obj):
@@ -34,47 +38,15 @@ class BoxProxy:
         ).Point2 = FreeCAD.Vector(1, 1, 1)
         add_chop_patch_properties(obj)
 
-    def execute(self, obj):
-        box = RecordingBox(
+    def build_operation(self, obj):
+        return RecordingBox(
             [obj.Point1.x, obj.Point1.y, obj.Point1.z],
             [obj.Point2.x, obj.Point2.y, obj.Point2.z],
         )
-        apply_chop_patch(obj, box)
-        self.operation = box
-        obj.Shape = self._tier_b_shape(box)
-
-    @staticmethod
-    def _tier_b_shape(box: RecordingBox) -> Part.Shape:
-        """Cheap straight-edge hexahedron preview (Tier B)."""
-        corner_min = box.bottom_face.points[0].position
-        corner_max = box.top_face.points[2].position
-        size = corner_max - corner_min
-        return Part.makeBox(size[0], size[1], size[2], FreeCAD.Vector(*corner_min))
-
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
 
 
-class BoxViewProvider:
+class BoxViewProvider(OperationViewProviderBase):
     """Minimal ViewProvider so the Box's Shape renders in the 3D view."""
-
-    def __init__(self, vobj):
-        vobj.Proxy = self
-
-    def attach(self, vobj):
-        self.Object = vobj.Object
-
-    def getIcon(self):
-        return ""
-
-    def __getstate__(self):
-        return None
-
-    def __setstate__(self, state):
-        return None
 
 
 def make_box(doc, name="Box"):
