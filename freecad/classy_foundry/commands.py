@@ -4,6 +4,8 @@ import FreeCAD
 import FreeCADGui
 
 from .objects.box import make_box
+from .objects.curve import make_point_list_curve
+from .objects.mapped_sketch import make_mapped_sketch
 from .objects.extracted_face import make_extracted_face
 from .objects.extrude import make_extrude
 from .objects.face import make_face
@@ -155,6 +157,36 @@ class ExtractFaceCommand:
     def IsActive(self):
         doc = FreeCAD.ActiveDocument
         return doc is not None and find_mesh(doc) is not None
+
+
+class CreateMappedSketchCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "MappedSketch",
+            "ToolTip": "Create a MappedSketch (point-list topology sketch)",
+        }
+
+    def Activated(self):
+        doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+        make_mapped_sketch(doc)
+
+    def IsActive(self):
+        return True
+
+
+class CreateCurveCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "Curve",
+            "ToolTip": "Create a point-list curve for use as an optimizer constraint",
+        }
+
+    def Activated(self):
+        doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+        make_point_list_curve(doc)
+
+    def IsActive(self):
+        return True
 
 
 class CreateFaceCommand:

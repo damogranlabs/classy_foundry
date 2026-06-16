@@ -194,3 +194,29 @@ def loft_preview_shape(operation) -> Part.Shape:
     bottom_wire = Part.makePolygon([*bottom, bottom[0]])
     top_wire = Part.makePolygon([*top, top[0]])
     return Part.makeLoft([bottom_wire, top_wire], True)
+
+
+def curve_preview_shape(curve) -> Part.Shape:
+    """Wire preview for a curve, discretized into segments."""
+    vectors = [FreeCAD.Vector(*p) for p in curve.discretize()]
+    return Part.makePolygon(vectors)
+
+
+def resolve_curve(curve_obj):
+    """Return curve_obj's recording curve instance, recomputing if needed; None if unavailable."""
+    return _resolve(curve_obj, "curve")
+
+
+class CurveProxyBase(ProxyBase):
+    """Shared execute() for Tier 0 Curve proxies.
+
+    Subclasses implement build_curve(obj), returning an object with discretize()
+    and to_lines(), or None if not yet buildable.
+    """
+
+    def execute(self, obj):
+        curve = self.build_curve(obj)
+        if curve is None:
+            return
+        self.curve = curve
+        obj.Shape = curve_preview_shape(curve)

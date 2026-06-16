@@ -14,9 +14,11 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
     def Initialize(self):
         from .commands import (
             CreateBoxCommand,
+            CreateCurveCommand,
             CreateExtrudeCommand,
             CreateFaceCommand,
             CreateLoftCommand,
+            CreateMappedSketchCommand,
             CreateMeshCommand,
             CreateRevolveCommand,
             ExportScriptCommand,
@@ -25,9 +27,11 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
         )
 
         FreeCADGui.addCommand("ClassyFoundry_CreateBox", CreateBoxCommand())
+        FreeCADGui.addCommand("ClassyFoundry_CreateCurve", CreateCurveCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateExtrude", CreateExtrudeCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateFace", CreateFaceCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateLoft", CreateLoftCommand())
+        FreeCADGui.addCommand("ClassyFoundry_CreateMappedSketch", CreateMappedSketchCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateRevolve", CreateRevolveCommand())
         FreeCADGui.addCommand("ClassyFoundry_ExtractFace", ExtractFaceCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateMesh", CreateMeshCommand())
@@ -41,6 +45,8 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
             "ClassyFoundry_CreateRevolve",
             "ClassyFoundry_CreateFace",
             "ClassyFoundry_ExtractFace",
+            "ClassyFoundry_CreateCurve",
+            "ClassyFoundry_CreateMappedSketch",
             "ClassyFoundry_CreateMesh",
             "ClassyFoundry_ShowScript",
             "ClassyFoundry_ExportScript",

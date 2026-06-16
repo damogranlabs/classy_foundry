@@ -1,16 +1,10 @@
 # classy_foundry — Design Notes
 
 A FreeCAD workbench that serves as a GUI for `classy_blocks`
-(https://github.com/damogranlabs/classy_blocks), which generates OpenFOAM
+(<https://github.com/damogranlabs/classy_blocks>), which generates OpenFOAM
 `blockMeshDict` files. classy_blocks is powerful but its text/scripting-only
 interface is cryptic for most users; this project aims to make its capabilities
 accessible through a guided, visual FreeCAD workbench.
-
-> Naming note: this project was initially sketched under the working name
-> "classy_mason". It has been renamed to **classy_foundry**. The current
-> `freecad/classy_mason/` directory and `pyproject.toml` (`name = "classy_mason"`)
-> are unrelated FreeCAD-tutorial boilerplate and need renaming to `classy_foundry`
-> as a future cleanup step.
 
 ## Three-layer architecture
 
@@ -54,6 +48,7 @@ grid of 1-or-many, instead of two near-duplicate classes (one for "Face → sing
 block", one for "Sketch → multiple blocks").
 
 **Constraints**:
+
 - Must remain backward compatible — all existing scripts using `cb.Face`,
   `cb.Operation`, `cb.Box`, `cb.Sketch`-derived shapes etc. must continue to behave
   identically.
@@ -84,8 +79,8 @@ script, savable/editable/version-controllable.
 
 **Avoiding duplicated/intermediate data models** — "recording subclasses":
 
-For each supported classy_blocks construct (starting with `Box`), define a thin
-subclass in classy_foundry, e.g. `classy_foundry.elements.Box(cb.Box)`, that:
+For each supported classy_blocks construct, define a thin subclass in
+classy_foundry, e.g. `classy_foundry.elements.Box(cb.Box)`, that:
 
 - Has the *same* `__init__` signature as `cb.Box`, but stashes the raw
   constructor args (cb's `__init__` does math and discards the originals — we
@@ -143,34 +138,21 @@ Generated scripts stay pure/portable; round-trip works for classy_foundry-style
 (and most hand-written) scripts, with no guarantee for arbitrary/complex control
 flow.
 
-Optional secondary mechanism: trailing comments (e.g.
-`# classy_foundry: label="Inlet duct"`) could carry FreeCAD-only presentation
-metadata (display name, tree grouping/order) that classy_blocks has no concept
-of — not the primary linking mechanism, just an escape hatch.
-
 **Scope decision**: one-way (FreeCAD → script) is primary; round-trip load is a
 planned capability via the exec-trace mechanism above, not full Python parsing.
 
-**Starting construct**: `Box` (`cb.Box(point1, point2)`) — simplest Operation
-subclass, minimal vertical slice covering `chop()` and `set_patch()`.
-
-**Units**: plain unitless numbers throughout — dimensional properties (Tier 0
-Point coordinates, lengths, etc.) are `App::PropertyFloat`, with no
-FreeCAD-unit conversion at the classy_blocks boundary. Users needing a scale
-factor use classy_blocks' own `mesh.settings.scale`, same as any hand-written
-script. `PropertyFloat` still supports Spreadsheet expression-binding, so
-parametrization (see Tier 0 below) is unaffected.
+**Units**: plain unitless numbers throughout — dimensional properties (Point
+coordinates, lengths, etc.) are `App::PropertyFloat`, with no FreeCAD-unit
+conversion at the classy_blocks boundary. Users needing a scale factor use
+classy_blocks' own `mesh.settings.scale`, same as any hand-written script.
+`PropertyFloat` still supports Spreadsheet expression-binding, so
+parametrization is unaffected.
 
 ---
 
 ## Layer 3 — GUI (FreeCAD workbench)
 
 ### Display strategy — two-tier preview, no VTK file I/O
-
-`write/vtk.py`'s `mesh_to_vtk` (debug output) needs nothing more than each
-block's 8 corner vertices connected as straight edges — it deliberately ignores
-curved edges (it's a topology-debug view). That same data can be built directly
-as native `Part::Solid` shapes instead of writing-then-reading VTK:
 
 - **Tier A — active element preview**: accurate geometry for the *single*
   element currently being edited, built via FreeCAD's `Part.makeLoft` /
@@ -208,34 +190,14 @@ use `debug.vtk` in ParaView today, just rendered natively.
 Mirrors classy_blocks' actual structure (see also Layer 1 unification above,
 which collapses these from 4 families to 2 over time):
 
-- **Tier 0 — Points (deferred)**: a lightweight, shareable Document Object
-  wrapping a single coordinate, giving classy_blocks' otherwise-anonymous
-  coordinate args (Box corners, Face points, etc.) an identity that can be
-  shared/referenced and expression-bound to a `Spreadsheet`. Tier 1/2
-  point-valued constructor-arg properties would become `App::PropertyLink`/
-  `PropertyLinkSub` to a Tier 0 Point, with a literal-value fallback for the
-  common case. Out of scope for now — Tier 1/2 objects use plain
-  `App::PropertyVector`s for coordinates; revisit once Tier 1/2 are more
-  fleshed out and the connectivity/codegen motivations below become concrete
-  pain points:
-  - **Codegen for shared points**: a Point referenced by multiple constructs
-    (or a coordinate expression-bound to a spreadsheet cell referenced from
-    multiple Points) would emit as one shared Python variable, used in each
-    construct's call — preserving the "shared point" relationship as ordinary
-    Python variable reuse (classy_blocks has no native shared-point concept,
-    but this produces idiomatic, DRY output). A parameters block at the top of
-    the generated script would mirror the spreadsheet cells actually
-    referenced.
-  - **Connectivity motivation**: shared Tier 0 Points would ensure block
-    corners that should coincide for `mesh.assemble()`'s vertex-merging
-    actually do exactly — no floating-point near-misses from independently
-    -typed literals.
-- **Tier 1 — 2D reusable profiles**: `Face` / `Sketch`. No chop/patch/cell info,
-  purely geometric. Modeled like a FreeCAD Sketch object: standalone, reusable,
-  referenceable by multiple Tier 2 objects (classy_blocks explicitly supports
-  reusing a Face/Sketch across operations — "use existing Operation's Face to
-  generate a new Operation", Connector between two existing Operations, chaining
-  a Shape's end sketch into a new Shape).
+- **Tier 0 — Points and Curves**: see MappedSketch section below for the full
+  design. Standalone Point Document Objects are not used; points are owned by
+  the sketch that contains them. Curve Document Objects (wrapping `cb.Curve`
+  subclasses) are independent, referenceable by any MappedSketch.
+- **Tier 1 — 2D reusable profiles**: `Face` / `MappedSketch` (and future
+  `Sketch`-derived types). No chop/patch/cell info, purely geometric. Modeled
+  like a FreeCAD Sketch object: standalone, reusable, referenceable by multiple
+  Tier 2 objects.
 - **Tier 2 — 3D "addable" things**: `Operation` / `Shape` (and `Stack`/
   `Assembly` as collections-of-shapes with their own chop/patch delegation
   rules). Modeled like PartDesign Pad/Pocket/Revolution: holds Link
@@ -256,16 +218,152 @@ Maps onto the same tiers as separate commands, not new object types:
 
 ---
 
-## v1 scope for classy_foundry
+## MappedSketch — sketcher design
 
-One full vertical slice through **Tier 1 → Tier 2 → Root**: `Face` +
-`Box`/`Loft`/`Extrude`/`Revolve`/`Wedge` + `Mesh` (Tier 0 Points deferred, see
-above). This establishes the Document Object base patterns —
-Properties-as-source-of-truth with `execute()`-rebuild, link properties,
-chop/patch sub-editor, two-tier preview, script codegen with topological
-ordering via FreeCAD's dependency graph — so that Sketch/Shape/Stack/Assembly/
-Optimizer/Tier 0 Points slot into the *same* patterns later rather than
-needing new ones.
+`cb.MappedSketch(positions, quads)` takes a flat point list plus quad index
+tuples. The text API requires manually tracking both by hand; this is the pain
+point the workbench removes.
+
+### Data model
+
+`MappedSketch` is a Document Object that owns two `PropertyPythonObject` lists:
+
+**Points** — each entry holds:
+
+- Position (x, y, z)
+- Clamp type: `Free` / `Fixed` / `OnCurve` / `OnSurface`
+- Curve/surface reference: index into the MappedSketch's `PropertyLinkList` of
+  `cb.Curve` / `cb.Surface` Document Objects (only meaningful for OnCurve/OnSurface)
+- Relational rule (optional): `Midpoint` or `Average` of a list of other point
+  indices — computes a first-guess position before `execute()`, ensuring the
+  initial mesh is valid for the optimizer
+
+**Quads** — each entry is a 4-index tuple referencing the point list. Order of
+the four indices determines quad orientation.
+
+Curve/surface Document Objects referenced by points exist independently in the
+document tree; multiple MappedSketch objects may reference the same curve.
+
+### Constraint types
+
+- **Type A (clamp)**: Free, Fixed, OnCurve, OnSurface — direct classy_blocks
+  optimizer concepts. The optimizer does not need constraints satisfied before
+  starting; a first iteration finds the nearest point on the referenced geometry.
+- **Type B (relational)**: Midpoint / Average of other point indices — not an
+  optimizer constraint, but a position pre-computation step. Ensures no collapsed,
+  inverted, or concave quads in the initial mesh, which the optimizer requires to
+  start successfully.
+
+MappedSketch is always **planar** (2D). Non-planar sketches are future work.
+
+### Sketcher UX (task panel)
+
+Opened by double-clicking a MappedSketch in the tree. Each MappedSketch has its
+own independent task panel.
+
+The panel contains two tables with `[+]` / `[-]` buttons:
+
+```
+[ Points                               ] [+] [-]
+  #  | X    | Y    | Z    | Clamp   | Ref
+  0  | 0.0  | 0.0  | 0.0  | Free    | —
+  1  | 1.0  | 0.0  | 0.0  | OnCurve | airfoil
+
+[ Quads                                ] [+] [-]
+  #  | P0 | P1 | P2 | P3
+  0  |  0 |  1 |  2 |  3
+```
+
+**Bidirectional selection** *(not yet implemented)*: clicking a point or quad in
+the 3D view highlights its row in the table; clicking a row highlights it in the
+3D view.
+
+**Viewport interaction** *(implemented)*:
+
+- `[+]` on Points → next click in viewport places a new point there
+- `[+]` on Quads → next 4 clicks in viewport define a quad:
+  - Click near an existing point (within `SNAP_TOLERANCE`) → snaps to it
+  - Click empty space → auto-creates a new point and uses it as the next corner
+- After 4 corners are selected, the quad closes and the counter resets
+- Coin3D overlay: white markers for points, yellow for in-progress quad corners,
+  grey wireframe for completed quads
+
+No explicit mode switching. No tool palette. No right-click menus.
+
+**Editing** *(implemented)*:
+
+- Point X/Y/Z and Clamp are edited directly in table cells
+- Quad P0–P3 are editable in the table — redefine or reorder without delete/recreate
+- Point deletion is blocked if the point is referenced by any quad
+- Closing warns on orphan points and discards any incomplete quad in progress
+- Ref column (curve reference per point) and relational rules: *not yet implemented*
+
+### Codegen
+
+`cb.MappedSketch` takes coordinate lists, not `cb.Point` objects. Current codegen:
+
+```python
+positions_sketch = [[x0, y0, z0], [x1, y1, z1], ...]
+sketch = cb.MappedSketch(positions_sketch, [[0, 1, 2, 3], ...])
+```
+
+Optimizer clamp calls (`cb.CurveClamp`, etc.) are a separate step, applied via
+`cb.SketchOptimizer` — not emitted by `to_lines()` yet.
+
+### PointListCurve — planned enhancements
+
+Current state: implemented. `CurveType` (Discrete/Linear/Spline), `Extrapolate`,
+`Equalize` are property-panel editable. Points are a `PropertyPythonObject`,
+editable only from the Python console.
+
+Planned: `PropertyFile "PointsFile"` (file picker in the property panel). When set,
+`build_curve()` loads coordinates via `numpy.loadtxt` (three-column X Y Z). File
+takes precedence over `Points`; if neither is set, `build_curve()` returns `None`.
+Covers the primary use case of importing externally generated data (airfoil files,
+Python/MATLAB-generated point clouds).
+
+Secondary (later): `PropertyLink "PointsSheet"` to a FreeCAD Spreadsheet, for
+hand-defining small point sets interactively. Checked only if `PointsFile` is empty.
+
+`LineCurve` and `CircleCurve` can follow the same `CurveProxyBase` pattern later
+with no changes to existing code.
+
+---
+
+## Current implementation state
+
+**Done (Tier 1/2 core)**: `Face`, `ExtractedFace`, `Box`, `Extrude`, `Loft`,
+`Revolve`, `Mesh`, all commands, script panel, mesh task panel.
+
+**Done (Tier 0 / MappedSketch)**:
+- `PointListCurve` Document Object — `CurveType`, `Extrapolate`, `Equalize`
+  properties; wire preview; `resolve_curve()` for future MappedSketch linkage.
+  Points still console-only (file import pending).
+- `MappedSketch` Document Object — `SketchPoints`, `SketchQuads`, `Curves`,
+  `WorkOrigin`/`WorkNormal`; `execute()` applies relational rules, builds
+  `cb.MappedSketch`, renders compound quad polygon preview.
+- Sketcher task panel — two tables (Points/Quads), viewport click-to-place,
+  4-click quad definition with proximity snap, Coin3D overlay, close-time
+  validation.
+
+**Pending (MappedSketch / sketcher)**:
+- Clamp Ref column (curve dropdown per point) in the task panel
+- Relational rule editing (Midpoint / Average) in the task panel
+- Bidirectional 3D↔table selection
+- Codegen for optimizer clamp calls (`cb.CurveClamp`, `cb.SketchOptimizer`)
+- PointListCurve file import (`PropertyFile` + `numpy.loadtxt`)
+
+**Remaining v1 (operations)**: `Wedge`, chop/patch sub-editor, Tier A preview.
+
+### TODO
+
+- Suppress all default 'transform' actions on double-click; re-implement as lists of transforms supported by classy
+- FreeCAD placement properties: disable
+- Default curve: LinearInterpolatedCurve
+- Proper tree view icons
+- Reference geometry for revolves and transforms: point, axis (interactive selection?)
+- Display: block vs. face
+- Selection limiting (faces only, block only, ...)
 
 ---
 
@@ -290,15 +388,3 @@ needing new ones.
 - `src/classy_blocks/write/vtk.py` — `mesh_to_vtk` (debug output).
 - `src/classy_blocks/base/element.py` — `ElementBase`: shared
   translate/rotate/scale/mirror/transform/`parts`/`center`.
-
----
-
-## Next steps
-
-1. **Now**: pursue the Layer 1 unification (Face/Sketch, Operation/Shape) as its
-   own effort in the `classy_blocks` repo — separate planning session.
-2. **Then**: return to classy_foundry and begin v1 (Face → Operation → Mesh),
-   informed by whatever the unification settles on.
-3. **Pending cleanup**: rename `freecad/classy_mason/` →
-   `freecad/classy_foundry/` and `pyproject.toml` `name = "classy_mason"` →
-   `"classy_foundry"`.
