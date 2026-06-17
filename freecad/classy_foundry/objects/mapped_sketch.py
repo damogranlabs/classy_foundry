@@ -91,8 +91,26 @@ class MappedSketchProxy(ProxyBase):
 class MappedSketchViewProvider(ViewProviderBase):
     def doubleClicked(self, vobj):
         import FreeCADGui
+        FreeCADGui.ActiveDocument.setEdit(vobj.Object, 0)
+        return True
+
+    def setEdit(self, vobj, mode):
+        if mode != 0:
+            return None
+        import FreeCADGui
         from ..taskpanels.sketch_panel import SketchTaskPanel
-        FreeCADGui.Control.showDialog(SketchTaskPanel(vobj.Object))
+        self._task = SketchTaskPanel(vobj.Object)
+        FreeCADGui.Control.showDialog(self._task)
+        return True
+
+    def unsetEdit(self, vobj, mode):
+        if mode != 0:
+            return None
+        import FreeCADGui
+        if hasattr(self, "_task"):
+            self._task._cleanup()
+            del self._task
+        FreeCADGui.Control.closeDialog()
         return True
 
 

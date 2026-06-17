@@ -48,7 +48,9 @@ class RecordingPointListCurve:
         pts = self._points_arg
         if self._curve_type == "Discrete":
             return [f"{varname} = {cls_name}({pts})"]
-        return [f"{varname} = {cls_name}({pts}, extrapolate={self._extrapolate!r}, equalize={self._equalize!r})"]
+        return [
+            f"{varname} = {cls_name}({pts}, extrapolate={self._extrapolate!r}, equalize={self._equalize!r})"
+        ]
 
 
 class PointListCurveProxy(CurveProxyBase):
@@ -62,7 +64,7 @@ class PointListCurveProxy(CurveProxyBase):
             "ClassyFoundry",
             "List of [x, y, z] points defining the curve",
         )
-        obj.Points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+        obj.Points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2, 1, 0]]
 
         obj.addProperty(
             "App::PropertyEnumeration",
@@ -71,7 +73,7 @@ class PointListCurveProxy(CurveProxyBase):
             "Interpolation method between points",
         )
         obj.CurveType = list(_CURVE_CLASSES)
-        obj.CurveType = "Spline"
+        obj.CurveType = "Linear"
 
         obj.addProperty(
             "App::PropertyBool",
