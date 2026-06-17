@@ -9,11 +9,21 @@ import FreeCAD
 from .recording import ProxyBase, ViewProviderBase
 
 
-def _mesh_add_name(element):
-    """Walk up any transform chain to find the root source varname for mesh.add()."""
-    while hasattr(element, "TransformType") and element.Source is not None:
-        element = element.Source
-    return element.Name.lower()
+def _is_modifier(element):
+    return getattr(element.Proxy, "IS_MODIFIER", False)
+
+
+def _dependencies(element):
+    """Return direct dependency objects (sketches, faces) of an element."""
+    deps = []
+    linked = getattr(element, "Sketch", None)
+    if linked is not None:
+        deps.append(linked)
+    for name in getattr(element.Proxy, "FACE_LINKS", ()):
+        linked = getattr(element, name, None)
+        if linked is not None:
+            deps.append(linked)
+    return deps
 
 
 class MeshProxy(ProxyBase):
@@ -35,7 +45,26 @@ class MeshProxy(ProxyBase):
         ).WritePath = "case/system/blockMeshDict"
 
     def execute(self, obj):
-        pass
+        if not FreeCAD.GuiUp:
+            return
+        hidden = set()
+        for element in obj.Elements:
+            if _is_modifier(element):
+                source = getattr(element, "Source", None)
+                if source is not None:
+                    hidden.add(source)
+            for dep in _dependencies(element):
+                hidden.add(dep)
+        for element in obj.Elements:
+            element.ViewObject.Visibility = element not in hidden
+
+    def _addable_elements(self, obj):
+        """Return elements that get mesh.add() — not modifiers and not dependencies."""
+        dep_set = set()
+        for element in obj.Elements:
+            for dep in _dependencies(element):
+                dep_set.add(dep)
+        return [e for e in obj.Elements if not _is_modifier(e) and e not in dep_set]
 
     def _resolve_solid(self, element):
         """Return the cb solid (operation or shape) from an element, recomputing if needed."""
@@ -50,11 +79,24 @@ class MeshProxy(ProxyBase):
                 return val
         return None
 
+    def _final_solid(self, element, obj):
+        """Walk modifier chain to get the fully-modified solid for an addable element."""
+        last_modifier = {}
+        for e in obj.Elements:
+            if _is_modifier(e):
+                source = getattr(e, "Source", None)
+                if source is not None:
+                    last_modifier[source] = e
+        target = element
+        while target in last_modifier:
+            target = last_modifier[target]
+        return self._resolve_solid(target)
+
     def build_cb_mesh(self, obj) -> cb.Mesh:
         """Build a live classy_blocks Mesh from this object's Elements."""
         mesh = cb.Mesh()
-        for element in obj.Elements:
-            solid = self._resolve_solid(element)
+        for element in self._addable_elements(obj):
+            solid = self._final_solid(element, obj)
             if solid is not None:
                 mesh.add(solid)
         return mesh
@@ -75,29 +117,26 @@ class MeshProxy(ProxyBase):
         emitted = set()
         for element in obj.Elements:
             self._emit_element(element, lines, emitted)
-            add_name = _mesh_add_name(element)
-            lines.append(f"mesh.add({add_name})")
-            lines.append("")
+
+        for element in self._addable_elements(obj):
+            lines.append(f"mesh.add({element.Name.lower()})")
+        lines.append("")
         lines.append(f"mesh.write({obj.WritePath!r})")
         return lines
 
     def _emit_element(self, element, lines, emitted):
-        """Emit codegen lines for an element (and its dependencies) if not already emitted."""
+        """Emit codegen lines for an element if not already emitted."""
         name = element.Name.lower()
         if name in emitted:
             return
         emitted.add(name)
         proxy = element.Proxy
 
-        if hasattr(element, "TransformType"):
-            if element.Source is not None:
-                self._emit_element(element.Source, lines, emitted)
+        if _is_modifier(element):
             lines.extend(proxy.to_lines(element))
             lines.append("")
 
         elif hasattr(element, "CopyOf"):
-            if element.CopyOf is not None:
-                self._emit_element(element.CopyOf, lines, emitted)
             lines.extend(proxy.to_lines(element, name))
             lines.append("")
 
@@ -129,10 +168,19 @@ class MeshProxy(ProxyBase):
 
 
 class MeshViewProvider(ViewProviderBase):
-    """ViewProvider that nests the Mesh's Elements under it in the tree view."""
+    """ViewProvider that nests all Elements (and their deps) under the Mesh."""
 
     def claimChildren(self):
-        return self.Object.Elements
+        elements = list(self.Object.Elements)
+        claimed = set(elements)
+        result = []
+        for element in elements:
+            for dep in _dependencies(element):
+                if dep not in claimed:
+                    result.append(dep)
+                    claimed.add(dep)
+            result.append(element)
+        return result
 
     def doubleClicked(self, vobj):
         import FreeCADGui
@@ -160,6 +208,16 @@ def make_mesh(doc, name="Mesh"):
 
 def add_element(mesh_obj, element):
     """Add `element` to mesh_obj's Elements list."""
-    elements = mesh_obj.Elements
+    elements = list(mesh_obj.Elements)
     elements.append(element)
+    mesh_obj.Elements = elements
+
+
+def insert_element_after(mesh_obj, element, after):
+    """Insert element after `after` in mesh_obj's Elements, or append."""
+    elements = list(mesh_obj.Elements)
+    if after in elements:
+        elements.insert(elements.index(after) + 1, element)
+    else:
+        elements.append(element)
     mesh_obj.Elements = elements

@@ -10,9 +10,6 @@ own constructor arguments.
 import FreeCAD
 import Part
 
-CHOP_PATCH_SIDES = ("Bottom", "Top", "Left", "Right", "Front", "Back")
-
-
 class ProxyBase:
     """Shared no-op persistence for Document Object proxies (state lives in Properties)."""
 
@@ -116,33 +113,20 @@ class OperationProxyBase(ProxyBase):
             return
 
         operation = self.build_operation(obj, *faces)
-        apply_chop_patch(obj, operation)
+        apply_chop(obj, operation)
         self.operation = operation
         obj.Shape = loft_preview_shape(operation)
 
-        for name in self.FACE_LINKS:
-            hide(getattr(obj, name))
-
 
 class OperationViewProviderBase(ViewProviderBase):
-    """Shared claimChildren() for Tier 2 Operation view providers: nests linked Face(s)."""
-
-    def claimChildren(self):
-        obj = self.Object
-        children = []
-        for name in obj.Proxy.FACE_LINKS:
-            face_obj = getattr(obj, name)
-            if face_obj is not None and face_obj not in children:
-                children.append(face_obj)
-        return children
+    pass
 
 
 class RecordingOperationMixin:
-    """Records chop()/set_patch() calls (and referenced Faces) for later codegen."""
+    """Records chop() calls (and referenced Faces) for later codegen."""
 
     def __init__(self, *args, **kwargs):
         self.recorded_chops: list[tuple[int, dict]] = []
-        self.recorded_patches: list[tuple[str, str]] = []
         self.referenced_faces: dict = {}
         super().__init__(*args, **kwargs)
 
@@ -150,23 +134,16 @@ class RecordingOperationMixin:
         super().chop(axis, **kwargs)
         self.recorded_chops.append((axis, kwargs))
 
-    def set_patch(self, sides, name):
-        super().set_patch(sides, name)
-        self.recorded_patches.append((sides, name))
-
-    def chop_patch_lines(self, varname: str) -> list[str]:
-        """Codegen lines for recorded chop()/set_patch() calls, in recording order."""
+    def chop_lines(self, varname: str) -> list[str]:
         lines = []
         for axis, kwargs in self.recorded_chops:
             args = ", ".join(f"{key}={value!r}" for key, value in kwargs.items())
             lines.append(f"{varname}.chop({axis}, {args})")
-        for sides, name in self.recorded_patches:
-            lines.append(f"{varname}.set_patch({sides!r}, {name!r})")
         return lines
 
 
-def add_chop_patch_properties(obj):
-    """Add the standard ChopCountX/Y/Z and Patch* properties to a Tier 2 object."""
+def add_chop_properties(obj):
+    """Add the standard ChopCountX/Y/Z properties to a Tier 2 object."""
     for axis_name in ("X", "Y", "Z"):
         obj.addProperty(
             "App::PropertyInteger",
@@ -174,25 +151,14 @@ def add_chop_patch_properties(obj):
             "Chop",
             f"Number of cells along the {axis_name} axis (0 = not chopped)",
         )
-    for side in CHOP_PATCH_SIDES:
-        obj.addProperty(
-            "App::PropertyString",
-            f"Patch{side}",
-            "Patches",
-            f"Patch name for the '{side.lower()}' side (empty = not set)",
-        )
 
 
-def apply_chop_patch(obj, operation):
-    """Replay an object's ChopCount*/Patch* properties onto a recording operation."""
+def apply_chop(obj, operation):
+    """Replay an object's ChopCount* properties onto a recording operation."""
     for axis, axis_name in enumerate(("X", "Y", "Z")):
         count = getattr(obj, f"ChopCount{axis_name}")
         if count > 0:
             operation.chop(axis, count=count)
-    for side in CHOP_PATCH_SIDES:
-        name = getattr(obj, f"Patch{side}")
-        if name:
-            operation.set_patch(side.lower(), name)
 
 
 def loft_preview_shape(operation) -> Part.Shape:

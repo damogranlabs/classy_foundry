@@ -4,13 +4,15 @@ import math
 
 import FreeCAD
 
-from .recording import ProxyBase, ViewProviderBase, hide, solid_preview_shape
+from .recording import ProxyBase, ViewProviderBase, solid_preview_shape
 
 TRANSFORM_TYPES = ["Translate", "Rotate", "Scale"]
 SOLID_ATTRS = ("operation", "shape")
 
 
 class TransformProxy(ProxyBase):
+    IS_MODIFIER = True
+
     def __init__(self, obj):
         obj.Proxy = self
         obj.addProperty(
@@ -68,7 +70,6 @@ class TransformProxy(ProxyBase):
         setattr(self, attr, transformed)
 
         obj.Shape = solid_preview_shape(transformed)
-        hide(source)
 
     def to_lines(self, obj):
         root = _root_source(obj)
@@ -79,15 +80,13 @@ class TransformProxy(ProxyBase):
 
 
 class TransformViewProvider(ViewProviderBase):
-    def claimChildren(self):
-        source = self.Object.Source
-        return [source] if source is not None else []
+    pass
 
 
 def _root_source(obj):
-    """Walk up the transform chain to the original non-Transform source object."""
+    """Walk up the modifier chain to the original non-modifier source object."""
     current = obj.Source
-    while current is not None and hasattr(current, "TransformType"):
+    while current is not None and getattr(current.Proxy, "IS_MODIFIER", False):
         current = current.Source
     return current
 

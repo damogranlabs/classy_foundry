@@ -14,6 +14,7 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
     def Initialize(self):
         from .commands import (
             CreateBoxCommand,
+            CreateChopCommand,
             CreateCopyCommand,
             CreateCurveCommand,
             CreateExtrudeCommand,
@@ -30,6 +31,7 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
         )
 
         FreeCADGui.addCommand("ClassyFoundry_CreateBox", CreateBoxCommand())
+        FreeCADGui.addCommand("ClassyFoundry_CreateChop", CreateChopCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateCopy", CreateCopyCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateCurve", CreateCurveCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateExtrude", CreateExtrudeCommand())
@@ -46,6 +48,7 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
 
         commands = [
             "ClassyFoundry_CreateBox",
+            "ClassyFoundry_CreateChop",
             "ClassyFoundry_CreateCopy",
             "ClassyFoundry_CreateExtrude",
             "ClassyFoundry_CreateExtrudedShape",

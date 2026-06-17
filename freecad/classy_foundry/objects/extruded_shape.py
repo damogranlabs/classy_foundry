@@ -3,7 +3,7 @@
 import classy_blocks as cb
 import FreeCAD
 
-from .recording import ProxyBase, ViewProviderBase, hide, resolve_sketch, solid_preview_shape
+from .recording import ProxyBase, ViewProviderBase, resolve_sketch, solid_preview_shape
 
 
 class ExtrudedShapeProxy(ProxyBase):
@@ -37,7 +37,6 @@ class ExtrudedShapeProxy(ProxyBase):
                 self.shape.chop(axis, count=count)
 
         obj.Shape = solid_preview_shape(self.shape)
-        hide(obj.Sketch)
 
     def to_lines(self, obj, varname):
         sketch_obj = obj.Sketch
@@ -53,12 +52,7 @@ class ExtrudedShapeProxy(ProxyBase):
 
 
 class ExtrudedShapeViewProvider(ViewProviderBase):
-    def claimChildren(self):
-        children = []
-        sketch = self.Object.Sketch
-        if sketch is not None:
-            children.append(sketch)
-        return children
+    pass
 
 
 def make_extruded_shape(doc, name="ExtrudedShape"):

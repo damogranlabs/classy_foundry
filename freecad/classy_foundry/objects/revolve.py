@@ -9,7 +9,7 @@ from .recording import (
     OperationProxyBase,
     OperationViewProviderBase,
     RecordingOperationMixin,
-    add_chop_patch_properties,
+    add_chop_properties,
 )
 
 
@@ -30,7 +30,7 @@ class RecordingRevolve(RecordingOperationMixin, cb.Revolve):
             f"{varname} = cb.Revolve({self.base_varname}, {angle_rad!r}, "
             f"{list(self.axis)}, {list(self.origin)})  # angle: {self.angle_deg} deg"
         ]
-        lines.extend(self.chop_patch_lines(varname))
+        lines.extend(self.chop_lines(varname))
         return lines
 
 
@@ -53,7 +53,7 @@ class RevolveProxy(OperationProxyBase):
         obj.addProperty(
             "App::PropertyVector", "Origin", "ClassyFoundry", "Point the revolve axis passes through"
         ).Origin = FreeCAD.Vector(0, 0, 0)
-        add_chop_patch_properties(obj)
+        add_chop_properties(obj)
 
     def build_operation(self, obj, base_face):
         axis = [obj.Axis.x, obj.Axis.y, obj.Axis.z]

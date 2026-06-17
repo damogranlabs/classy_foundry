@@ -6,6 +6,7 @@ import FreeCADGui
 from .objects.box import make_box
 from .objects.curve import make_point_list_curve
 from .objects.mapped_sketch import make_mapped_sketch
+from .objects.chop import make_chop
 from .objects.copy import make_copy
 from .objects.extracted_face import make_extracted_face
 from .objects.extruded_shape import make_extruded_shape
@@ -13,7 +14,7 @@ from .objects.transform import make_transform
 from .objects.extrude import make_extrude
 from .objects.face import make_face
 from .objects.loft import make_loft
-from .objects.mesh import add_element, find_mesh, make_mesh
+from .objects.mesh import add_element, find_mesh, insert_element_after, make_mesh
 from .objects.mapped_sketch import MappedSketchProxy
 from .objects.recording import FaceProxyBase, OperationProxyBase, resolve_operation
 from .objects.revolve import make_revolve
@@ -204,6 +205,32 @@ class CreateExtrudedShapeCommand:
         return doc is not None and find_mesh(doc) is not None
 
 
+class CreateChopCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "Chop",
+            "ToolTip": "Apply chop/patch settings to a classy_blocks entity",
+        }
+
+    def Activated(self):
+        doc = FreeCAD.ActiveDocument
+        sel = FreeCADGui.Selection.getSelection(doc.Name)
+        if len(sel) != 1:
+            FreeCAD.Console.PrintError("Select exactly one object to chop\n")
+            return
+
+        source = sel[0]
+        mesh_obj = find_mesh(doc)
+        chop_obj = make_chop(doc)
+        chop_obj.Source = source
+        insert_element_after(mesh_obj, chop_obj, source)
+        doc.recompute()
+
+    def IsActive(self):
+        doc = FreeCAD.ActiveDocument
+        return doc is not None and find_mesh(doc) is not None
+
+
 class CreateCopyCommand:
     def GetResources(self):
         return {
@@ -218,10 +245,11 @@ class CreateCopyCommand:
             FreeCAD.Console.PrintError("Select exactly one object to copy\n")
             return
 
+        source = sel[0]
         mesh_obj = find_mesh(doc)
         copy_obj = make_copy(doc)
-        copy_obj.CopyOf = sel[0]
-        add_element(mesh_obj, copy_obj)
+        copy_obj.CopyOf = source
+        insert_element_after(mesh_obj, copy_obj, source)
         doc.recompute()
 
     def IsActive(self):
@@ -244,18 +272,10 @@ class CreateTransformCommand:
             return
 
         source = sel[0]
+        mesh_obj = find_mesh(doc)
         transform_obj = make_transform(doc)
         transform_obj.Source = source
-
-        mesh_obj = find_mesh(doc)
-        if mesh_obj is not None:
-            elements = mesh_obj.Elements
-            if source in elements:
-                elements[elements.index(source)] = transform_obj
-            else:
-                elements.append(transform_obj)
-            mesh_obj.Elements = elements
-
+        insert_element_after(mesh_obj, transform_obj, source)
         doc.recompute()
 
     def IsActive(self):

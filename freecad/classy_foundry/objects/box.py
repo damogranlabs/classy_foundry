@@ -7,7 +7,7 @@ from .recording import (
     OperationProxyBase,
     OperationViewProviderBase,
     RecordingOperationMixin,
-    add_chop_patch_properties,
+    add_chop_properties,
 )
 
 
@@ -21,7 +21,7 @@ class RecordingBox(RecordingOperationMixin, cb.Box):
 
     def to_lines(self, varname: str) -> list[str]:
         lines = [f"{varname} = cb.Box({list(self.start_point)}, {list(self.diagonal_point)})"]
-        lines.extend(self.chop_patch_lines(varname))
+        lines.extend(self.chop_lines(varname))
         return lines
 
 
@@ -36,7 +36,7 @@ class BoxProxy(OperationProxyBase):
         obj.addProperty(
             "App::PropertyVector", "Point2", "ClassyFoundry", "Corner diagonally opposite Point1"
         ).Point2 = FreeCAD.Vector(1, 1, 1)
-        add_chop_patch_properties(obj)
+        add_chop_properties(obj)
 
     def build_operation(self, obj):
         return RecordingBox(
