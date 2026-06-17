@@ -32,6 +32,9 @@ class ViewProviderBase:
     def attach(self, vobj):
         self.Object = vobj.Object
 
+    def onDelete(self, vobj, subelements):
+        return True
+
     def getIcon(self):
         return ""
 
@@ -59,6 +62,11 @@ def resolve_face(face_obj):
 def resolve_operation(op_obj):
     """Return op_obj's recording Operation instance, recomputing if needed; None if unavailable."""
     return _resolve(op_obj, "operation")
+
+
+def resolve_sketch(sketch_obj):
+    """Return sketch_obj's cb.MappedSketch instance, recomputing if needed; None if unavailable."""
+    return _resolve(sketch_obj, "sketch")
 
 
 def hide(obj):
@@ -194,6 +202,19 @@ def loft_preview_shape(operation) -> Part.Shape:
     bottom_wire = Part.makePolygon([*bottom, bottom[0]])
     top_wire = Part.makePolygon([*top, top[0]])
     return Part.makeLoft([bottom_wire, top_wire], True)
+
+
+def solid_preview_shape(solid) -> Part.Shape:
+    """Preview shape for any cb solid (single Operation or multi-operation Shape)."""
+    if hasattr(solid, "operations"):
+        previews = []
+        for op in solid.operations:
+            try:
+                previews.append(loft_preview_shape(op))
+            except Exception:
+                pass
+        return Part.makeCompound(previews) if previews else Part.Shape()
+    return loft_preview_shape(solid)
 
 
 def curve_preview_shape(curve) -> Part.Shape:

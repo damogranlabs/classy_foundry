@@ -9,6 +9,13 @@ import FreeCAD
 from .recording import ProxyBase, ViewProviderBase
 
 
+def _mesh_add_name(element):
+    """Walk up any transform chain to find the root source varname for mesh.add()."""
+    while hasattr(element, "TransformType") and element.Source is not None:
+        element = element.Source
+    return element.Name.lower()
+
+
 class MeshProxy(ProxyBase):
     """Proxy for an App::FeaturePython object representing a classy_blocks Mesh."""
 
@@ -30,21 +37,26 @@ class MeshProxy(ProxyBase):
     def execute(self, obj):
         pass
 
-    def _elements_with_operation(self, obj):
-        """Return (element, RecordingOperation-like instance) pairs, recomputing as needed."""
-        pairs = []
-        for element in obj.Elements:
-            if not hasattr(element.Proxy, "operation"):
-                element.recompute(True)
-            if hasattr(element.Proxy, "operation"):
-                pairs.append((element, element.Proxy.operation))
-        return pairs
+    def _resolve_solid(self, element):
+        """Return the cb solid (operation or shape) from an element, recomputing if needed."""
+        for attr in ("operation", "shape"):
+            val = getattr(element.Proxy, attr, None)
+            if val is not None:
+                return val
+        element.recompute(True)
+        for attr in ("operation", "shape"):
+            val = getattr(element.Proxy, attr, None)
+            if val is not None:
+                return val
+        return None
 
     def build_cb_mesh(self, obj) -> cb.Mesh:
         """Build a live classy_blocks Mesh from this object's Elements."""
         mesh = cb.Mesh()
-        for _, operation in self._elements_with_operation(obj):
-            mesh.add(operation)
+        for element in obj.Elements:
+            solid = self._resolve_solid(element)
+            if solid is not None:
+                mesh.add(solid)
         return mesh
 
     def validate(self, obj) -> str | None:
@@ -60,20 +72,60 @@ class MeshProxy(ProxyBase):
 
     def to_script_lines(self, obj) -> list[str]:
         lines = ["import classy_blocks as cb", "", "mesh = cb.Mesh()", ""]
-        emitted_faces = set()
-        for element, operation in self._elements_with_operation(obj):
-            for varname, face in operation.referenced_faces.items():
-                if varname not in emitted_faces:
-                    lines.extend(face.to_lines(varname))
-                    lines.append("")
-                    emitted_faces.add(varname)
-
-            varname = element.Name.lower()
-            lines.extend(operation.to_lines(varname))
-            lines.append(f"mesh.add({varname})")
+        emitted = set()
+        for element in obj.Elements:
+            self._emit_element(element, lines, emitted)
+            add_name = _mesh_add_name(element)
+            lines.append(f"mesh.add({add_name})")
             lines.append("")
         lines.append(f"mesh.write({obj.WritePath!r})")
         return lines
+
+    def _emit_element(self, element, lines, emitted):
+        """Emit codegen lines for an element (and its dependencies) if not already emitted."""
+        name = element.Name.lower()
+        if name in emitted:
+            return
+        emitted.add(name)
+        proxy = element.Proxy
+
+        if hasattr(element, "TransformType"):
+            if element.Source is not None:
+                self._emit_element(element.Source, lines, emitted)
+            lines.extend(proxy.to_lines(element))
+            lines.append("")
+
+        elif hasattr(element, "CopyOf"):
+            if element.CopyOf is not None:
+                self._emit_element(element.CopyOf, lines, emitted)
+            lines.extend(proxy.to_lines(element, name))
+            lines.append("")
+
+        elif hasattr(proxy, "shape") and hasattr(element, "Sketch"):
+            self._emit_sketch_lines(element, lines, emitted)
+            lines.extend(proxy.to_lines(element, name))
+            lines.append("")
+
+        elif hasattr(proxy, "operation"):
+            operation = proxy.operation
+            for dep_name, face in operation.referenced_faces.items():
+                if dep_name not in emitted:
+                    lines.extend(face.to_lines(dep_name))
+                    lines.append("")
+                    emitted.add(dep_name)
+            lines.extend(operation.to_lines(name))
+            lines.append("")
+
+    @staticmethod
+    def _emit_sketch_lines(element, lines, emitted):
+        sketch_obj = element.Sketch
+        if sketch_obj is None:
+            return
+        sketch_varname = sketch_obj.Name.lower()
+        if sketch_varname not in emitted:
+            lines.extend(sketch_obj.Proxy.to_lines(sketch_obj, sketch_varname))
+            lines.append("")
+            emitted.add(sketch_varname)
 
 
 class MeshViewProvider(ViewProviderBase):

@@ -14,25 +14,31 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
     def Initialize(self):
         from .commands import (
             CreateBoxCommand,
+            CreateCopyCommand,
             CreateCurveCommand,
             CreateExtrudeCommand,
+            CreateExtrudedShapeCommand,
             CreateFaceCommand,
             CreateLoftCommand,
             CreateMappedSketchCommand,
             CreateMeshCommand,
             CreateRevolveCommand,
+            CreateTransformCommand,
             ExportScriptCommand,
             ExtractFaceCommand,
             ShowScriptCommand,
         )
 
         FreeCADGui.addCommand("ClassyFoundry_CreateBox", CreateBoxCommand())
+        FreeCADGui.addCommand("ClassyFoundry_CreateCopy", CreateCopyCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateCurve", CreateCurveCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateExtrude", CreateExtrudeCommand())
+        FreeCADGui.addCommand("ClassyFoundry_CreateExtrudedShape", CreateExtrudedShapeCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateFace", CreateFaceCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateLoft", CreateLoftCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateMappedSketch", CreateMappedSketchCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateRevolve", CreateRevolveCommand())
+        FreeCADGui.addCommand("ClassyFoundry_CreateTransform", CreateTransformCommand())
         FreeCADGui.addCommand("ClassyFoundry_ExtractFace", ExtractFaceCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateMesh", CreateMeshCommand())
         FreeCADGui.addCommand("ClassyFoundry_ExportScript", ExportScriptCommand())
@@ -40,9 +46,12 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
 
         commands = [
             "ClassyFoundry_CreateBox",
+            "ClassyFoundry_CreateCopy",
             "ClassyFoundry_CreateExtrude",
+            "ClassyFoundry_CreateExtrudedShape",
             "ClassyFoundry_CreateLoft",
             "ClassyFoundry_CreateRevolve",
+            "ClassyFoundry_CreateTransform",
             "ClassyFoundry_CreateFace",
             "ClassyFoundry_ExtractFace",
             "ClassyFoundry_CreateCurve",

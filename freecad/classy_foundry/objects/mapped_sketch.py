@@ -22,12 +22,12 @@ def _apply_relational(points_data):
 def sketch_preview_shape(sketch):
     faces = []
     for face in sketch.faces:
-        corners = [FreeCAD.Vector(*p.position) for p in face.points]
-        wire = Part.makePolygon([*corners, corners[0]])
+        corners = [FreeCAD.Vector(*p.position.tolist()) for p in face.points]
         try:
+            wire = Part.makePolygon([*corners, corners[0]])
             faces.append(Part.Face(wire))
         except Exception:
-            faces.append(wire)
+            pass
     if not faces:
         return Part.Shape()
     return Part.makeCompound(faces)
@@ -48,6 +48,12 @@ class MappedSketchProxy(ProxyBase):
             "List of [p0, p1, p2, p3] index lists",
         )
         obj.SketchQuads = []
+
+        obj.addProperty(
+            "App::PropertyPythonObject", "SketchChops", "ClassyFoundry",
+            "Per-axis lists of quad indices to chop: [[axis0...], [axis1...]]",
+        )
+        obj.SketchChops = []
 
         obj.addProperty(
             "App::PropertyLinkList", "Curves", "ClassyFoundry",
@@ -72,6 +78,9 @@ class MappedSketchProxy(ProxyBase):
 
         positions = _apply_relational(points_data)
         self.sketch = cb.MappedSketch(positions, [list(q) for q in quads_data])
+        chops = obj.SketchChops
+        if chops and len(chops) == 2:
+            self.sketch.chops = [list(c) for c in chops]
         obj.Shape = sketch_preview_shape(self.sketch)
 
     def to_lines(self, obj, varname):
@@ -82,10 +91,14 @@ class MappedSketchProxy(ProxyBase):
 
         positions = _apply_relational(points_data)
         pos_repr = [[round(c, 6) for c in p] for p in positions]
-        return [
+        lines = [
             f"positions_{varname} = {pos_repr}",
             f"{varname} = cb.MappedSketch(positions_{varname}, {[list(q) for q in quads_data]})",
         ]
+        chops = obj.SketchChops
+        if chops and any(chops):
+            lines.append(f"{varname}.chops = {[list(c) for c in chops]}")
+        return lines
 
 
 class MappedSketchViewProvider(ViewProviderBase):
@@ -107,11 +120,18 @@ class MappedSketchViewProvider(ViewProviderBase):
         if mode != 0:
             return None
         import FreeCADGui
+        self._close_task()
+        FreeCADGui.Control.closeDialog()
+        return True
+
+    def onDelete(self, vobj, subelements):
+        self._close_task()
+        return True
+
+    def _close_task(self):
         if hasattr(self, "_task"):
             self._task._cleanup()
             del self._task
-        FreeCADGui.Control.closeDialog()
-        return True
 
 
 def make_mapped_sketch(doc, name="MappedSketch"):

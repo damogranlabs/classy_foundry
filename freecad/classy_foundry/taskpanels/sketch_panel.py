@@ -67,6 +67,8 @@ class SketchTaskPanel:
         self.obj = obj
         self._points = [dict(p) for p in obj.SketchPoints]
         self._quads = [list(q) for q in obj.SketchQuads]
+        chops = getattr(obj, "SketchChops", None) or [[], []]
+        self._chops = [set(chops[0]), set(chops[1])]
         self._mode = None
         self._quad_in_progress = []
         self._hovered_idx = -1
@@ -148,8 +150,8 @@ class SketchTaskPanel:
         quad_btns.addStretch()
         layout.addLayout(quad_btns)
 
-        self._quads_table = QtGui.QTableWidget(0, 5)
-        self._quads_table.setHorizontalHeaderLabels(["#", "P0", "P1", "P2", "P3"])
+        self._quads_table = QtGui.QTableWidget(0, 7)
+        self._quads_table.setHorizontalHeaderLabels(["#", "P0", "P1", "P2", "P3", "Chop 0", "Chop 1"])
         self._quads_table.horizontalHeader().setStretchLastSection(True)
         self._quads_table.setSelectionBehavior(QtGui.QAbstractItemView.SelectRows)
         layout.addWidget(self._quads_table)
@@ -356,6 +358,13 @@ class SketchTaskPanel:
                 if col == 0:
                     item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
                 self._quads_table.setItem(i, col, item)
+            for axis in range(2):
+                item = QtGui.QTableWidgetItem()
+                item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
+                item.setCheckState(
+                    QtCore.Qt.Checked if i in self._chops[axis] else QtCore.Qt.Unchecked
+                )
+                self._quads_table.setItem(i, 5 + axis, item)
 
         if 0 <= self._selected_idx < len(self._points):
             self._pts_table.selectRow(self._selected_idx)
@@ -391,18 +400,25 @@ class SketchTaskPanel:
                 self._points[row]["clamp"] = clamp
 
     def _on_quad_cell_changed(self, row, col):
-        if col not in (1, 2, 3, 4) or row >= len(self._quads):
+        if row >= len(self._quads):
             return
         item = self._quads_table.item(row, col)
         if item is None:
             return
-        try:
-            idx = int(item.text())
-        except ValueError:
-            return
-        if 0 <= idx < len(self._points):
-            self._quads[row][col - 1] = idx
-            self._rebuild_coin3d()
+        if col in (1, 2, 3, 4):
+            try:
+                idx = int(item.text())
+            except ValueError:
+                return
+            if 0 <= idx < len(self._points):
+                self._quads[row][col - 1] = idx
+                self._rebuild_coin3d()
+        elif col in (5, 6):
+            axis = col - 5
+            if item.checkState() == QtCore.Qt.Checked:
+                self._chops[axis].add(row)
+            else:
+                self._chops[axis].discard(row)
 
     # ------------------------------------------------------------------ Viewport interaction
 
@@ -615,6 +631,9 @@ class SketchTaskPanel:
         elif self._selected_quad_idx > row:
             self._selected_quad_idx -= 1
         self._quads.pop(row)
+        for axis in range(2):
+            self._chops[axis].discard(row)
+            self._chops[axis] = {i - 1 if i > row else i for i in self._chops[axis]}
         self._rebuild_tables()
         self._rebuild_coin3d()
 
@@ -633,6 +652,8 @@ class SketchTaskPanel:
             return
         self._cleaned_up = True
         view = FreeCADGui.ActiveDocument.ActiveView
+        if view is None:
+            return
         view.removeEventCallbackPivy(coin.SoMouseButtonEvent.getClassTypeId(), self._event_cb)
         view.removeEventCallbackPivy(coin.SoLocation2Event.getClassTypeId(), self._move_cb)
         view.getSceneGraph().removeChild(self._root)
@@ -660,8 +681,11 @@ class SketchTaskPanel:
 
         self.obj.SketchPoints = list(self._points)
         self.obj.SketchQuads = list(self._quads)
+        self.obj.SketchChops = [sorted(self._chops[0]), sorted(self._chops[1])]
+        self._cleanup()
         self.obj.Document.recompute()
         return True
 
     def reject(self):
+        self._cleanup()
         return True

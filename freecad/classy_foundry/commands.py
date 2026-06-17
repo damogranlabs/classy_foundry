@@ -6,11 +6,15 @@ import FreeCADGui
 from .objects.box import make_box
 from .objects.curve import make_point_list_curve
 from .objects.mapped_sketch import make_mapped_sketch
+from .objects.copy import make_copy
 from .objects.extracted_face import make_extracted_face
+from .objects.extruded_shape import make_extruded_shape
+from .objects.transform import make_transform
 from .objects.extrude import make_extrude
 from .objects.face import make_face
 from .objects.loft import make_loft
 from .objects.mesh import add_element, find_mesh, make_mesh
+from .objects.mapped_sketch import MappedSketchProxy
 from .objects.recording import FaceProxyBase, OperationProxyBase, resolve_operation
 from .objects.revolve import make_revolve
 from .script_panel import show_script_panel
@@ -172,6 +176,91 @@ class CreateMappedSketchCommand:
 
     def IsActive(self):
         return True
+
+
+class CreateExtrudedShapeCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "ExtrudedShape",
+            "ToolTip": "Extrude a MappedSketch into a 3D shape",
+        }
+
+    def Activated(self):
+        doc = FreeCAD.ActiveDocument
+        sel = [o for o in FreeCADGui.Selection.getSelection(doc.Name)
+               if isinstance(getattr(o, "Proxy", None), MappedSketchProxy)]
+        if len(sel) != 1:
+            FreeCAD.Console.PrintError("Select exactly one MappedSketch to extrude\n")
+            return
+
+        mesh_obj = find_mesh(doc)
+        shape_obj = make_extruded_shape(doc)
+        shape_obj.Sketch = sel[0]
+        add_element(mesh_obj, shape_obj)
+        doc.recompute()
+
+    def IsActive(self):
+        doc = FreeCAD.ActiveDocument
+        return doc is not None and find_mesh(doc) is not None
+
+
+class CreateCopyCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "Copy",
+            "ToolTip": "Create a linked copy of a classy_blocks entity",
+        }
+
+    def Activated(self):
+        doc = FreeCAD.ActiveDocument
+        sel = FreeCADGui.Selection.getSelection(doc.Name)
+        if len(sel) != 1:
+            FreeCAD.Console.PrintError("Select exactly one object to copy\n")
+            return
+
+        mesh_obj = find_mesh(doc)
+        copy_obj = make_copy(doc)
+        copy_obj.CopyOf = sel[0]
+        add_element(mesh_obj, copy_obj)
+        doc.recompute()
+
+    def IsActive(self):
+        doc = FreeCAD.ActiveDocument
+        return doc is not None and find_mesh(doc) is not None
+
+
+class CreateTransformCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "Transform",
+            "ToolTip": "Apply translate/rotate/scale to a classy_blocks entity",
+        }
+
+    def Activated(self):
+        doc = FreeCAD.ActiveDocument
+        sel = FreeCADGui.Selection.getSelection(doc.Name)
+        if len(sel) != 1:
+            FreeCAD.Console.PrintError("Select exactly one object to transform\n")
+            return
+
+        source = sel[0]
+        transform_obj = make_transform(doc)
+        transform_obj.Source = source
+
+        mesh_obj = find_mesh(doc)
+        if mesh_obj is not None:
+            elements = mesh_obj.Elements
+            if source in elements:
+                elements[elements.index(source)] = transform_obj
+            else:
+                elements.append(transform_obj)
+            mesh_obj.Elements = elements
+
+        doc.recompute()
+
+    def IsActive(self):
+        doc = FreeCAD.ActiveDocument
+        return doc is not None and find_mesh(doc) is not None
 
 
 class CreateCurveCommand:
