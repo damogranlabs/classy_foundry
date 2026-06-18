@@ -2,9 +2,7 @@
 
 import FreeCAD
 
-from .recording import ProxyBase, ViewProviderBase, solid_preview_shape
-
-SOLID_ATTRS = ("operation", "shape")
+from .recording import ENTITY_ATTRS, ProxyBase, ViewProviderBase, _ENTITY_PREVIEW, modifier_root_from, resolve_entity
 
 
 class CopyProxy(ProxyBase):
@@ -20,45 +18,29 @@ class CopyProxy(ProxyBase):
         if source is None:
             return
 
-        attr, original = _resolve_source(source)
+        attr, original = resolve_entity(source)
         if original is None:
             return
 
         copied = original.copy()
 
-        for a in SOLID_ATTRS:
+        for a in ENTITY_ATTRS:
             if a != attr and hasattr(self, a):
                 delattr(self, a)
         setattr(self, attr, copied)
 
-        obj.Shape = solid_preview_shape(copied)
+        obj.Shape = _ENTITY_PREVIEW[attr](copied)
 
     def to_lines(self, obj, varname):
         source = obj.CopyOf
         if source is None:
             return []
-        target = source
-        while hasattr(target, "TransformType") and target.Source is not None:
-            target = target.Source
-        return [f"{varname} = {target.Name.lower()}.copy()"]
+        root = modifier_root_from(source)
+        return [f"{varname} = {root.Name.lower()}.copy()"]
 
 
 class CopyViewProvider(ViewProviderBase):
     pass
-
-
-def _resolve_source(source):
-    """Return (attr_name, cb_solid) from a source object, recomputing if needed."""
-    for attr in SOLID_ATTRS:
-        val = getattr(source.Proxy, attr, None)
-        if val is not None:
-            return attr, val
-    source.recompute(True)
-    for attr in SOLID_ATTRS:
-        val = getattr(source.Proxy, attr, None)
-        if val is not None:
-            return attr, val
-    return None, None
 
 
 def make_copy(doc, name="Copy"):

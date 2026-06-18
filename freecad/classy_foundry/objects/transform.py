@@ -4,10 +4,11 @@ import math
 
 import FreeCAD
 
-from .recording import ProxyBase, ViewProviderBase, solid_preview_shape
+from .recording import (
+    ENTITY_ATTRS, ProxyBase, ViewProviderBase, _ENTITY_PREVIEW, modifier_root_from, resolve_entity,
+)
 
 TRANSFORM_TYPES = ["Translate", "Rotate", "Scale"]
-SOLID_ATTRS = ("operation", "shape")
 
 
 class TransformProxy(ProxyBase):
@@ -57,22 +58,22 @@ class TransformProxy(ProxyBase):
         if source is None:
             return
 
-        attr, original = _resolve_source(source)
+        attr, original = resolve_entity(source)
         if original is None:
             return
 
         transformed = original.copy()
         _apply(obj, transformed)
 
-        for a in SOLID_ATTRS:
+        for a in ENTITY_ATTRS:
             if a != attr and hasattr(self, a):
                 delattr(self, a)
         setattr(self, attr, transformed)
 
-        obj.Shape = solid_preview_shape(transformed)
+        obj.Shape = _ENTITY_PREVIEW[attr](transformed)
 
     def to_lines(self, obj):
-        root = _root_source(obj)
+        root = modifier_root_from(obj.Source)
         if root is None:
             return []
         call = _transform_call(obj)
@@ -81,28 +82,6 @@ class TransformProxy(ProxyBase):
 
 class TransformViewProvider(ViewProviderBase):
     pass
-
-
-def _root_source(obj):
-    """Walk up the modifier chain to the original non-modifier source object."""
-    current = obj.Source
-    while current is not None and getattr(current.Proxy, "IS_MODIFIER", False):
-        current = current.Source
-    return current
-
-
-def _resolve_source(source):
-    """Return (attr_name, cb_solid) from a source object, recomputing if needed."""
-    for attr in SOLID_ATTRS:
-        val = getattr(source.Proxy, attr, None)
-        if val is not None:
-            return attr, val
-    source.recompute(True)
-    for attr in SOLID_ATTRS:
-        val = getattr(source.Proxy, attr, None)
-        if val is not None:
-            return attr, val
-    return None, None
 
 
 def _apply(obj, target):

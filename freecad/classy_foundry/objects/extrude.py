@@ -3,12 +3,7 @@
 import classy_blocks as cb
 import FreeCAD
 
-from .recording import (
-    OperationProxyBase,
-    OperationViewProviderBase,
-    RecordingOperationMixin,
-    add_chop_properties,
-)
+from .recording import OperationProxyBase, OperationViewProviderBase, RecordingOperationMixin
 
 
 class RecordingExtrude(RecordingOperationMixin, cb.Extrude):
@@ -21,9 +16,7 @@ class RecordingExtrude(RecordingOperationMixin, cb.Extrude):
         self.referenced_faces = {base_varname: base}
 
     def to_lines(self, varname: str) -> list[str]:
-        lines = [f"{varname} = cb.Extrude({self.base_varname}, {list(self.amount)})"]
-        lines.extend(self.chop_lines(varname))
-        return lines
+        return [f"{varname} = cb.Extrude({self.base_varname}, {list(self.amount)})"]
 
 
 class ExtrudeProxy(OperationProxyBase):
@@ -39,7 +32,6 @@ class ExtrudeProxy(OperationProxyBase):
         obj.addProperty(
             "App::PropertyVector", "Amount", "ClassyFoundry", "Extrusion vector"
         ).Amount = FreeCAD.Vector(0, 0, 1)
-        add_chop_properties(obj)
 
     def build_operation(self, obj, base_face):
         amount = [obj.Amount.x, obj.Amount.y, obj.Amount.z]

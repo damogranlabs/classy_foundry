@@ -3,26 +3,17 @@
 import classy_blocks as cb
 import FreeCAD
 
-from .recording import (
-    OperationProxyBase,
-    OperationViewProviderBase,
-    RecordingOperationMixin,
-    add_chop_properties,
-)
+from .recording import OperationProxyBase, OperationViewProviderBase, RecordingOperationMixin
 
 
 class RecordingBox(RecordingOperationMixin, cb.Box):
-    """A cb.Box that remembers its constructor args and chop()/set_patch() calls."""
-
     def __init__(self, start_point, diagonal_point):
         self.start_point = start_point
         self.diagonal_point = diagonal_point
         super().__init__(start_point, diagonal_point)
 
     def to_lines(self, varname: str) -> list[str]:
-        lines = [f"{varname} = cb.Box({list(self.start_point)}, {list(self.diagonal_point)})"]
-        lines.extend(self.chop_lines(varname))
-        return lines
+        return [f"{varname} = cb.Box({list(self.start_point)}, {list(self.diagonal_point)})"]
 
 
 class BoxProxy(OperationProxyBase):
@@ -36,7 +27,6 @@ class BoxProxy(OperationProxyBase):
         obj.addProperty(
             "App::PropertyVector", "Point2", "ClassyFoundry", "Corner diagonally opposite Point1"
         ).Point2 = FreeCAD.Vector(1, 1, 1)
-        add_chop_properties(obj)
 
     def build_operation(self, obj):
         return RecordingBox(

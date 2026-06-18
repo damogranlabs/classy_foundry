@@ -3,12 +3,7 @@
 import classy_blocks as cb
 import FreeCAD
 
-from .recording import (
-    OperationProxyBase,
-    OperationViewProviderBase,
-    RecordingOperationMixin,
-    add_chop_properties,
-)
+from .recording import OperationProxyBase, OperationViewProviderBase, RecordingOperationMixin
 
 
 class RecordingLoft(RecordingOperationMixin, cb.Loft):
@@ -21,9 +16,7 @@ class RecordingLoft(RecordingOperationMixin, cb.Loft):
         self.referenced_faces = {bottom_varname: bottom_face, top_varname: top_face}
 
     def to_lines(self, varname: str) -> list[str]:
-        lines = [f"{varname} = cb.Loft({self.bottom_varname}, {self.top_varname})"]
-        lines.extend(self.chop_lines(varname))
-        return lines
+        return [f"{varname} = cb.Loft({self.bottom_varname}, {self.top_varname})"]
 
 
 class LoftProxy(OperationProxyBase):
@@ -35,7 +28,6 @@ class LoftProxy(OperationProxyBase):
         obj.Proxy = self
         obj.addProperty("App::PropertyLink", "BottomFace", "ClassyFoundry", "Bottom face")
         obj.addProperty("App::PropertyLink", "TopFace", "ClassyFoundry", "Top face")
-        add_chop_properties(obj)
 
     def build_operation(self, obj, bottom_face, top_face):
         return RecordingLoft(

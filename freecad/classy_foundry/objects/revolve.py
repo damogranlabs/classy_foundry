@@ -6,10 +6,8 @@ import classy_blocks as cb
 import FreeCAD
 
 from .recording import (
-    OperationProxyBase,
-    OperationViewProviderBase,
-    RecordingOperationMixin,
-    add_chop_properties,
+    AxisVisualizationMixin, OperationProxyBase, OperationViewProviderBase,
+    RecordingOperationMixin, revolve_preview_shape,
 )
 
 
@@ -26,18 +24,19 @@ class RecordingRevolve(RecordingOperationMixin, cb.Revolve):
 
     def to_lines(self, varname: str) -> list[str]:
         angle_rad = math.radians(self.angle_deg)
-        lines = [
+        return [
             f"{varname} = cb.Revolve({self.base_varname}, {angle_rad!r}, "
             f"{list(self.axis)}, {list(self.origin)})  # angle: {self.angle_deg} deg"
         ]
-        lines.extend(self.chop_lines(varname))
-        return lines
 
 
 class RevolveProxy(OperationProxyBase):
     """Proxy for a Part::FeaturePython object representing a classy_blocks Revolve."""
 
     FACE_LINKS = ("Base",)
+
+    def _preview_shape(self, obj, operation):
+        return revolve_preview_shape([operation], obj.Origin, obj.Axis, float(obj.Angle))
 
     def __init__(self, obj):
         obj.Proxy = self
@@ -53,7 +52,6 @@ class RevolveProxy(OperationProxyBase):
         obj.addProperty(
             "App::PropertyVector", "Origin", "ClassyFoundry", "Point the revolve axis passes through"
         ).Origin = FreeCAD.Vector(0, 0, 0)
-        add_chop_properties(obj)
 
     def build_operation(self, obj, base_face):
         axis = [obj.Axis.x, obj.Axis.y, obj.Axis.z]
@@ -61,8 +59,8 @@ class RevolveProxy(OperationProxyBase):
         return RecordingRevolve(base_face, obj.Angle, axis, origin, obj.Base.Name.lower())
 
 
-class RevolveViewProvider(OperationViewProviderBase):
-    """Minimal ViewProvider so the Revolve's Shape renders in the 3D view."""
+class RevolveViewProvider(AxisVisualizationMixin, OperationViewProviderBase):
+    pass
 
 
 def make_revolve(doc, name="Revolve"):

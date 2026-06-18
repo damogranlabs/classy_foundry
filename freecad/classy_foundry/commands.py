@@ -10,6 +10,8 @@ from .objects.chop import make_chop
 from .objects.copy import make_copy
 from .objects.extracted_face import make_extracted_face
 from .objects.extruded_shape import make_extruded_shape
+from .objects.loftedshape import make_lofted_shape
+from .objects.revolvedshape import make_revolved_shape
 from .objects.transform import make_transform
 from .objects.extrude import make_extrude
 from .objects.face import make_face
@@ -19,6 +21,16 @@ from .objects.mapped_sketch import MappedSketchProxy
 from .objects.recording import FaceProxyBase, OperationProxyBase, resolve_operation
 from .objects.revolve import make_revolve
 from .script_panel import show_script_panel
+
+
+def _sketch_root(obj):
+    """Return the root MappedSketch of obj (which may be a Copy/Transform chain), or None."""
+    current = obj
+    while current is not None:
+        if isinstance(getattr(current, "Proxy", None), MappedSketchProxy):
+            return current
+        current = getattr(current, "CopyOf", None) or getattr(current, "Source", None)
+    return None
 
 
 def _selected_faces(doc, count, error):
@@ -205,11 +217,65 @@ class CreateExtrudedShapeCommand:
         return doc is not None and find_mesh(doc) is not None
 
 
+class CreateRevolvedShapeCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "RevolvedShape",
+            "ToolTip": "Revolve a MappedSketch around an axis into a 3D shape",
+        }
+
+    def Activated(self):
+        doc = FreeCAD.ActiveDocument
+        sel = [o for o in FreeCADGui.Selection.getSelection(doc.Name)
+               if isinstance(getattr(o, "Proxy", None), MappedSketchProxy)]
+        if len(sel) != 1:
+            FreeCAD.Console.PrintError("Select exactly one MappedSketch to revolve\n")
+            return
+
+        mesh_obj = find_mesh(doc)
+        shape_obj = make_revolved_shape(doc)
+        shape_obj.Sketch = sel[0]
+        add_element(mesh_obj, shape_obj)
+        doc.recompute()
+
+    def IsActive(self):
+        doc = FreeCAD.ActiveDocument
+        return doc is not None and find_mesh(doc) is not None
+
+
+class CreateLoftedShapeCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "LoftedShape",
+            "ToolTip": "Loft between two MappedSketches into a 3D shape",
+        }
+
+    def Activated(self):
+        doc = FreeCAD.ActiveDocument
+        sel = [o for o in FreeCADGui.Selection.getSelection(doc.Name) if _sketch_root(o)]
+        if len(sel) != 2:
+            FreeCAD.Console.PrintError(
+                "Select exactly two sketches (or Copy/Transform thereof) to loft between\n"
+            )
+            return
+
+        mesh_obj = find_mesh(doc)
+        shape_obj = make_lofted_shape(doc)
+        shape_obj.Sketch1 = sel[0]
+        shape_obj.Sketch2 = sel[1]
+        add_element(mesh_obj, shape_obj)
+        doc.recompute()
+
+    def IsActive(self):
+        doc = FreeCAD.ActiveDocument
+        return doc is not None and find_mesh(doc) is not None
+
+
 class CreateChopCommand:
     def GetResources(self):
         return {
             "MenuText": "Chop",
-            "ToolTip": "Apply chop/patch settings to a classy_blocks entity",
+            "ToolTip": "Apply cell-count chop to a classy_blocks entity",
         }
 
     def Activated(self):

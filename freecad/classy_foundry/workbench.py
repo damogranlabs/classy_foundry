@@ -21,9 +21,11 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
             CreateExtrudedShapeCommand,
             CreateFaceCommand,
             CreateLoftCommand,
+            CreateLoftedShapeCommand,
             CreateMappedSketchCommand,
             CreateMeshCommand,
             CreateRevolveCommand,
+            CreateRevolvedShapeCommand,
             CreateTransformCommand,
             ExportScriptCommand,
             ExtractFaceCommand,
@@ -36,6 +38,8 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
         FreeCADGui.addCommand("ClassyFoundry_CreateCurve", CreateCurveCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateExtrude", CreateExtrudeCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateExtrudedShape", CreateExtrudedShapeCommand())
+        FreeCADGui.addCommand("ClassyFoundry_CreateLoftedShape", CreateLoftedShapeCommand())
+        FreeCADGui.addCommand("ClassyFoundry_CreateRevolvedShape", CreateRevolvedShapeCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateFace", CreateFaceCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateLoft", CreateLoftCommand())
         FreeCADGui.addCommand("ClassyFoundry_CreateMappedSketch", CreateMappedSketchCommand())
@@ -52,6 +56,8 @@ class ClassyFoundryWorkbench(FreeCADGui.Workbench):
             "ClassyFoundry_CreateCopy",
             "ClassyFoundry_CreateExtrude",
             "ClassyFoundry_CreateExtrudedShape",
+            "ClassyFoundry_CreateLoftedShape",
+            "ClassyFoundry_CreateRevolvedShape",
             "ClassyFoundry_CreateLoft",
             "ClassyFoundry_CreateRevolve",
             "ClassyFoundry_CreateTransform",

@@ -14,11 +14,24 @@ def _is_modifier(element):
 
 
 def _dependencies(element):
-    """Return direct dependency objects (sketches, faces) of an element."""
+    """Return dependency objects (sketches, faces) of an element.
+
+    For SKETCH_LINKS the full Copy/Transform chain is walked so that intermediate
+    objects (the Copy and any Transform modifiers between a LoftedShape and its root
+    MappedSketch) are treated as dependencies and hidden/excluded from mesh.add().
+    """
     deps = []
-    linked = getattr(element, "Sketch", None)
-    if linked is not None:
-        deps.append(linked)
+    for name in getattr(element.Proxy, "SKETCH_LINKS", ()):
+        linked = getattr(element, name, None)
+        while linked is not None:
+            if linked not in deps:
+                deps.append(linked)
+            if hasattr(linked, "CopyOf"):
+                linked = linked.CopyOf
+            elif hasattr(linked, "Source"):
+                linked = linked.Source
+            else:
+                break
     for name in getattr(element.Proxy, "FACE_LINKS", ()):
         linked = getattr(element, name, None)
         if linked is not None:
@@ -140,8 +153,9 @@ class MeshProxy(ProxyBase):
             lines.extend(proxy.to_lines(element, name))
             lines.append("")
 
-        elif hasattr(proxy, "shape") and hasattr(element, "Sketch"):
-            self._emit_sketch_lines(element, lines, emitted)
+        elif hasattr(proxy, "shape") and getattr(proxy, "SKETCH_LINKS", None):
+            for link_name in proxy.SKETCH_LINKS:
+                self._emit_single_sketch(getattr(element, link_name, None), lines, emitted)
             lines.extend(proxy.to_lines(element, name))
             lines.append("")
 
@@ -156,13 +170,18 @@ class MeshProxy(ProxyBase):
             lines.append("")
 
     @staticmethod
-    def _emit_sketch_lines(element, lines, emitted):
-        sketch_obj = element.Sketch
+    def _emit_single_sketch(sketch_obj, lines, emitted):
         if sketch_obj is None:
             return
-        sketch_varname = sketch_obj.Name.lower()
+        # Walk Copy/Transform chain to find the root MappedSketch to emit
+        current = sketch_obj
+        while current is not None and getattr(getattr(current, "Proxy", None), "sketch", None) is None:
+            current = getattr(current, "CopyOf", None) or getattr(current, "Source", None)
+        if current is None:
+            return
+        sketch_varname = current.Name.lower()
         if sketch_varname not in emitted:
-            lines.extend(sketch_obj.Proxy.to_lines(sketch_obj, sketch_varname))
+            lines.extend(current.Proxy.to_lines(current, sketch_varname))
             lines.append("")
             emitted.add(sketch_varname)
 
