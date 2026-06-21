@@ -1,34 +1,40 @@
-# References:
-# https://packaging.python.org/en/latest/specifications/declaring-project-metadata/
-# https://packaging.python.org/en/latest/guides/packaging-namespace-packages/#native-namespace-packages
-# https://packaging.python.org/en/latest/guides/single-sourcing-package-version/
-# https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
-name = "freecad-classy_foundry"
-dynamic = ["version"]
-description = "A FreeCAD workbench to interactively and visually build classy_blocks meshes"
+name = "classy_foundry"
+version = "0.0.0"
+description = "A graphical user interface for classy_blocks python library"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE-Code", "LICENSE-Assets"]
-keywords = ["classy_blocks", "OpenFOAM", "blockMesh"]
-maintainers = [{ name = "Nejc Jurkovič", email = "nejc.jurkovic@proton.me" }]
-requires-python = ">=3.10"
-dependencies = ["numpy", "scipy", "nptyping", "numba", "classy_blocks"]
+keywords = ["classy_foundry", "classy_blocks", "GUI", "OpenFOAM", "blockMesh"]
+authors = [{ name = "Nejc Jurkovic", email = "nejc.jurkovic@proton.me" }]
+requires-python = ">=3.9"
+dependencies = ["polyscope", "classy_blocks"]
 
-[dependency-groups]
-dev = ["PySide6", "ruff", "codespell", "freecad-stubs"]
+[project.urls]
+"Homepage" = "https://github.com/damogranlabs/classy_foundry"
+# "Tutorials" = "https://damogranlabs.com/category/classy_foundry"
+# "Bug Tracker" = "https://github.com/damogranlabs/classy_foundry/issues"
+# "Contributing" = "https://github.com/damogranlabs/classy_foundry/blob/master/CONTRIBUTING.md"
 
-# [project.urls]
-# source = "https://github.com/damogranlabs/classy_foundry"
+[project.optional-dependencies]
+dev = ["pytest", "parameterized", "ruff~=0.9", "mypy~=1.2", "pre-commit"]
 
-[tool.hatch.version]
-path = "freecad/classy_foundry/version.py"
-# Hatchling looks for __version__ = "..." by default
+[build-system]
+requires = ["setuptools >= 80.0"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["freecad"]
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "YTT", "B", "A", "ARG", "RUF"]
+
+[[tool.mypy.overrides]]
+module = "scipy,scipy.*,parameterized.*,polyscope.*"
+ignore_missing_imports = true
+
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = ["tests"]
