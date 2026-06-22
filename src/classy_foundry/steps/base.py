@@ -74,6 +74,7 @@ CODEGEN = {
     "point_list": lambda v: "[" + ", ".join(_point_code(e) for e in v) + "]",
     "index_list": lambda v: repr([[int(i) for i in row] for row in v]),
     "points_file": lambda v: f"np.loadtxt({v!r})",
+    "choice": lambda v: repr(v),
     "ref": lambda step: step.name if step is not None else "None",
 }
 
@@ -111,6 +112,10 @@ class Step:
     def to_lines(self):
         """This step's classy_blocks source line(s)."""
         raise NotImplementedError
+
+    def apply_to_mesh(self, mesh, context):
+        """Mesh-level hook, run once per step after every `mesh.add` (see model.build_mesh).
+        A no-op for element steps; mesh-level steps (graders, …) override it."""
 
 
 # --- point inputs: a value is either a literal [x, y, z] or a Point step (a reference) ---
@@ -223,3 +228,34 @@ class ValueStep(Step):
     def to_lines(self):
         field = self._field()
         return [f"{self.name} = {CODEGEN[self.SCHEMA[field]['kind']](self.values[field])}"]
+
+
+class HelperStep(Step):
+    """A step that wraps the mesh in a classy_blocks helper and calls a finishing method:
+    `name = cb.Cls(mesh, args…)` then `name.<cb_call>()`.
+
+    The shared shape of the auto-graders (and, later, mesh optimizers/smoothers — element-
+    targeted helpers will add a `ref` target, clamp-carrying ones their own body). The
+    helper acts on the whole assembled mesh, so it does its work in `apply_to_mesh` (run
+    after every `mesh.add`), not in the per-step build pass, and produces no display
+    geometry. Every `SCHEMA` field is a positional constructor arg after `mesh`.
+    """
+
+    cb_call: str = ""
+
+    def build(self, context):
+        """No pre-assembly value to build; the helper runs later, in apply_to_mesh."""
+        return None
+
+    def _args(self, context):
+        return [resolve_value(self.values[f], spec, context) for f, spec in self.SCHEMA.items()]
+
+    def apply_to_mesh(self, mesh, context):
+        helper = getattr(cb, self.cb_name)(mesh, *self._args(context))
+        getattr(helper, self.cb_call)()
+
+    def to_lines(self):
+        args = ", ".join(
+            ["mesh"] + [CODEGEN[spec["kind"]](self.values[f]) for f, spec in self.SCHEMA.items()]
+        )
+        return [f"{self.name} = cb.{self.cb_name}({args})", f"{self.name}.{self.cb_call}()"]

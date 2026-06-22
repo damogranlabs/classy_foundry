@@ -109,6 +109,8 @@ class Model:
         for step in self.steps:
             if step.adds_to_mesh and step in context:
                 mesh.add(context[step])
+        for step in self.steps:  # mesh-level steps (graders, …); a no-op for the rest
+            step.apply_to_mesh(mesh, context)
         return mesh
 
     def write_blockmesh(self, path="blockMeshDict"):

@@ -10,6 +10,7 @@ from .chop import Chop
 from .curve import PointsFileCurve
 from .extrude import Extrude
 from .face import Face
+from .graders import FixedCount, Inflation, Simple
 from .loft import Loft
 from .mapped_sketch import MappedSketch
 from .point import Point
@@ -64,4 +65,8 @@ CATALOG = [
     HalfSphere,
     # Grading
     Chop,
+    # Grading / Automatic
+    FixedCount,
+    Simple,
+    Inflation,
 ]

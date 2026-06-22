@@ -1,16 +1,17 @@
-# classy_polyscope — Design
+# classy_foundry — Design
 
 A [Polyscope](https://polyscope.run/py/) front-end for
 [`classy_blocks`](https://github.com/damogranlabs/classy_blocks), which generates
-OpenFOAM `blockMeshDict` files. It is the sibling of the FreeCAD workbench in
-`../classy_foundry`: same goal (make classy_blocks' powerful-but-cryptic scripting
-API accessible through a guided, visual tool), same conceptual core, different host.
+OpenFOAM `blockMeshDict` files. Its goal is to make classy_blocks'
+powerful-but-cryptic scripting API accessible through a guided, visual tool. This is
+the **second attempt**; the first was a FreeCAD workbench (same conceptual core,
+different host) — referred to below as "the FreeCAD attempt".
 
 Polyscope is far more limited than FreeCAD as a GUI host — no document model, no
 property system, no persistence, no CAD kernel. But it is a **mesh-native viewer**,
 which is exactly what this tool needs to show. The design below leans into that:
-keep classy_foundry's GUI-agnostic core, drop everything that only existed to
-satisfy FreeCAD, and let classy_blocks' own geometry drive the display.
+keep a GUI-agnostic core, drop everything that only existed to satisfy FreeCAD, and
+let classy_blocks' own geometry drive the display.
 
 Verified baseline: `polyscope` 2.6.1 (with full `polyscope.imgui` bindings —
 tables, trees, combos, input fields, drag-drop), `classy_blocks` 1.11.2,
@@ -23,9 +24,10 @@ Python 3.10.
 - **Dependencies**: `pip install polyscope classy_blocks numpy` (Python 3.10). A GPU /
   GL context is needed for the live app; headless verification uses Polyscope's
   CPU-mock backend (below).
-- **Run**: from inside the package dir, `python app.py`. Imports are top-level
-  (`from model import …`, `from steps.… import …`, `from view.… import …`), so the
-  working directory must be the package dir.
+- **Run**: `python -m classy_foundry` from `src/` (entry point is
+  `classy_foundry/__main__.py` → `main()` → `ps.show()`). The package uses **relative**
+  imports (`from .steps … import`, `from ..model import`), so it runs as a module, not a
+  loose script.
 - **Artifacts** are written to the working dir: `model.pkl` (Save / Open),
   `mesh_script.py` (Export script), `blockMeshDict` (Write blockMeshDict).
 - **classy_blocks local patch — not currently load-bearing.** `transform_matrix(M)` was
@@ -42,11 +44,11 @@ Python 3.10.
 
 ---
 
-## What ports from classy_foundry, what gets rebuilt
+## What ports from the FreeCAD attempt, what gets rebuilt
 
-The FreeCAD design has three layers. Only the middle one is host-independent.
+The FreeCAD attempt had three layers. Only the middle one is host-independent.
 
-| classy_foundry relied on FreeCAD for… | Polyscope offers | classy_polyscope approach |
+| The FreeCAD attempt relied on FreeCAD for… | Polyscope offers | This tool's approach |
 |---|---|---|
 | Document/Proxy + typed Properties (persistence) | nothing | **pickle the step list** (see below) |
 | Dependency graph (InList/OutList) | nothing | plain Python references between steps; list order is already a valid codegen order |
@@ -98,9 +100,9 @@ Implication for step classes: they must pickle cleanly — restrict any
 `__getstate__`/`__setstate__` to recipe fields; never persist the computed `cb` value.
 (A schema-version int in the pickle guards against future field changes.)
 
-**Units**: plain unitless numbers throughout, same as classy_foundry — dimensional
-values are plain floats, no unit conversion at the classy_blocks boundary. Scale is
-handled by classy_blocks' own `mesh.settings.scale`.
+**Units**: plain unitless numbers throughout — dimensional values are plain floats, no
+unit conversion at the classy_blocks boundary. Scale is handled by classy_blocks' own
+`mesh.settings.scale`.
 
 **Numeric fields are expression strings (implemented).** A scalar `float`/`int` field
 stores its value as a **string** (`"pi/2"`, `"deg2rad(90)"`, `"5*2"`), not a number — so
@@ -158,11 +160,6 @@ reference curve (`cb.LinearInterpolatedCurve`). The recipe stays a tiny path —
 re-load from the file on every build and in the exported script, so editing the file flows
 through (no baked points; flag if a "freeze" option is ever wanted).
 
-**This supersedes the earlier "element owns a hidden chop/patch `calls` log".** A chop
-is now its own visible step in the list, uniform with everything else — matching the
-authoring model. (Refactor of the current `Element` + `calls` code into a step list is
-pending — see Roadmap.)
-
 **Ordering & references.** A step may reference only ancestors, so the list order is
 already a valid codegen order — no separate topo-sort, just a no-forward-reference
 check. `build()` replays the list to reconstruct live `cb` values; **pickle persists
@@ -170,9 +167,11 @@ the step list** (recipe only — scalars + references by identity, never `cb` ge
 same declarative-replay property as before. See **Naming** for how references stay
 rename-safe.
 
-**The mesh.** Where `mesh.add(...)` / `set_default_patch` / `scale` / geometry live in
-the step model (implicit single mesh vs. explicit mesh steps) is part of categorizing
-the palette — **deferred**.
+**The mesh.** There is one implicit mesh. Mesh-level steps (the auto-graders, later a
+mesh optimizer/smoother) act on it via the `apply_to_mesh` hook (run after every
+`mesh.add`; see **Step class hierarchy**). Whether `set_default_patch` / `scale` /
+geometry become explicit mesh steps or stay implicit is part of categorizing the
+palette — **deferred**.
 
 **Transforms are just a (configuring) step.** The detailed transform UI — gizmo vs.
 numeric, in-place vs. derived copy/array — is **not yet settled and deliberately left
@@ -205,11 +204,32 @@ Each base implements `build()` + `to_lines()` **once**, parameterised by a class
 | `ValueStep` *(exists)* | `name = <literal>` (single field is the output) | — | Single point |
 | `ConfiguringStep` *(exists)* | `<ref>.method(args…)` (in-place; output = target) | `cb_method` | Translate, Rotate, Scale, Project, Set patch, Grade axis (chop), Grade edge |
 | `DerivedStep` | `name = <ref>.method(args…)` (new value from an ancestor) | `cb_method` | copy, Extract face |
+| `HelperStep` *(exists)* | `name = cb.Cls(target, args…)` then `name.<call>()` (helper object + finishing call) | `cb_name`, `cb_call` | auto-graders *(done)*, mesh/sketch/shape optimizers & smoothers |
 
-Two patterns get their own small base when their first member lands:
+**`HelperStep` — the "helper object + call" family (decided).** classy_blocks' graders,
+optimizers, and smoothers all share one shape: *wrap a target in a helper, then call a
+finishing method* (`cb.FixedCountGrader(mesh).grade()`, `cb.SketchSmoother(s).smooth()`,
+`cb.SketchOptimizer(s)…optimize()`). So they share **one** base, `HelperStep`, parameterised
+by `cb_name` (helper class) + `cb_call` (the finishing method). The earlier `OptimizerStep`
+sketch is subsumed by it. Two orthogonal axes inside the family, each added with its first
+member (YAGNI):
 
-- `OptimizerStep` — `opt = cb.SketchOptimizer(target); opt.optimize()` (helper object + call).
-- mesh-level config — default patch / auto-graders / scale act on the mesh, not a step.
+- **Target = mesh vs element.** Mesh-targeted helpers (auto-graders, `MeshOptimizer`) act on
+  the whole assembled mesh, so they run in the `apply_to_mesh` hook (a base **no-op**,
+  overridden here), once per step *after* every `mesh.add` (`model.build_mesh`), and draw
+  nothing. Element-targeted helpers (`Sketch`/`ShapeOptimizer`/`Smoother`) take a `ref`
+  target and run in the normal build pass — *added when the first optimizer lands*.
+- **Extra body.** Graders/smoothers are a bare `helper; call()`. Optimizers additionally
+  drive constraints (`add_clamp`), which is the optimizer's real design — deferred, and
+  shaped around classy_blocks' upcoming **smart points / `AutoOptimizer`** (see
+  **Optimization & smoothing**). It *extends* `HelperStep`.
+
+**Manual chop is not in this family.** `op.chop(axis, count)` is a method on the target
+in place — `ConfiguringStep`, no helper object. It stays there, unchanged.
+
+One pattern still gets its own small base when its first member lands:
+
+- mesh-level **config** — default patch / scale act on the mesh (also via `apply_to_mesh`).
 
 **Marker sub-bases under `ProducingStep` (implemented).** Where a family shares attrs
 *and* needs a common type for `accepts`, a thin intermediate base carries both — no
@@ -251,8 +271,10 @@ string), so the one-way `view → model` rule holds.
 ### Gradual, not speculative
 
 Each base is added **when its first member is implemented** (YAGNI): `ProducingStep`,
-`ValueStep`, and `ConfiguringStep` exist; `DerivedStep` / `OptimizerStep` arrive with
-their first type. This hierarchy is the plan the incremental work follows.
+`ValueStep`, `ConfiguringStep`, and `HelperStep` (its first members are the auto-graders)
+exist; `DerivedStep` arrives with its first type, and `HelperStep`'s element-targeted /
+clamp-carrying branches with the first optimizer. This hierarchy is the plan the
+incremental work follows.
 
 ---
 
@@ -321,7 +343,7 @@ the sketcher owns). Its structure name has a space (`"world axes"`), so it can n
 with a step name or resolve as a selection. Polyscope has **no built-in world-axes gizmo**;
 this is the ~5-line vector-quantity substitute.
 
-This replaces classy_foundry's two-tier `Part.*` scheme. (The fully assembled & graded
+This replaces the FreeCAD attempt's two-tier `Part.*` scheme. (The fully assembled & graded
 cell mesh from `mesh.assemble()` could be an optional on-demand "show final cells" view
 later, but it is not the working display.) Curved-edge preview (`op.edges` → curve
 network) is a future enhancement, not yet built.
@@ -453,22 +475,97 @@ real output.
 | `MappedSketch` *(done)* | positions + quads | the sketcher *(implemented)* — kept **separate** from Face (decided); now a `SketchStep` so it feeds Shapes |
 | Sketch catalogue *(done)* | Disk/Oval/… sketches | declared from points; `"sketch_faces"` render |
 | `Box`/`Extrude`/`Loft`/`Revolve`/`Wedge` *(done)* | sweep a profile | reference a profile step; live preview; pick points for revolve axis / 2nd loft profile |
-| Shapes & catalogue solids *(done)* | sweep a sketch / ready-made solids | Extruded/Revolved/Lofted shape (sketch ref); Cylinder/Frustum/Elbow/rings/spheres (points). **Need shape-aware grading before they write.** |
-| `Chop` (grade) | `chop(axis, …)` | *implemented* (Grade axis step); spatial form (pick face → axis) later |
+| Shapes & catalogue solids *(done)* | sweep a sketch / ready-made solids | Extruded/Revolved/Lofted shape (sketch ref); Cylinder/Frustum/Elbow/rings/spheres (points). Grade with an **auto-grader** (no per-shape chopping — see below). |
+| `Chop` (grade) | `chop(axis, …)` | *implemented* (Grade axis step, **operations only**); spatial form (pick face → axis) later |
+| Auto-graders *(done)* | `FixedCount`/`Simple`/`Inflation` grader | a `HelperStep`: `cb.Grader(mesh, …).grade()`; grades every ungraded row → the one thing a Shape needs to write |
 | `SetPatch` (tag) | `set_patch(side, name)` | *deferred* — pick face(s) → name; `set_default_patch` not required to write |
 | `Project` | `project_*(geometry)` | *deferred* — pick edge/face → pick target surface/curve |
 | `Transform` | translate/rotate/scale | *UI not yet settled* (deferred) |
-| Optimize | Sketch/Shape/Mesh optimizers | *deferred* |
+| Smooth / Optimize | Sketch/Shape/Mesh smoothers & optimizers | `HelperStep`s; smoothers next, optimizers wait on cb smart points (see **Optimization & smoothing**) |
 | Write | assemble/grade/write | *implemented* — Write blockMeshDict button (no default patch needed) |
 
-**Grading now.** An operation needs a `Chop` on each of its three axes before it
-writes (verified). That's three Grade-axis steps per operation — functional but
-verbose; the **Auto graders** palette items (`Auto: fixed count`, …) will later collapse
-that to one step.
+**Grading model (decided).** classy_blocks shapes *can* be chopped per-axis, but that means
+per-shape recipes (and `chop_axial/radial/tangential` quirks — spheres have no generic
+`chop` at all). We **don't grade shapes manually**. Instead: the operation `Chop` (single
+block, done) handles the specific axes a user cares about, and an **auto-grader** fills in
+everything else. A grader grades only rows still ungraded (`row.count == 0`), so a manual
+`Chop` and a grader compose. This is what unblocks every Shape / catalogue solid from
+writing a blockMeshDict — *without* any shape-specific chop code.
 
 **Scope now.** The build→grade→write loop is closed (point/profile → sweep → grade →
 blockMeshDict). Patches, projection, transforms, optimization, and the spatial grading
 UI are deferred — all ride the proven `pick` foundation, so deferral costs no rework.
+
+---
+
+## Optimization & smoothing (planned)
+
+Both are `HelperStep`s (`helper = cb.Cls(target); helper.<call>()`), but they split
+sharply by cost, and the optimizer's design hinges on a classy_blocks change landing first.
+
+### Smoothers — cheap, inline (build next)
+
+`MeshSmoother` / `SketchSmoother` are instant and clamp-free, so they're plain
+`HelperStep`s with `cb_call="smooth"` that run on **every build** like any other step:
+
+- `MeshSmoother` is **mesh-targeted** — runs in `apply_to_mesh`, exactly like a grader.
+- `SketchSmoother` is the **first element-targeted** `HelperStep` — its target is a sketch
+  `ref`, and it mutates that sketch *in place during the build pass*, before any dependent
+  sweep builds. Each rebuild constructs a fresh sketch and smooths it once, so there is no
+  compounding.
+
+These are the warm-up that proves the element-target branch; no button, no special-casing.
+
+### Optimizers — expensive, decoupled from the live rebuild
+
+An optimizer can take a while, and it **mutates its target mid-pipeline** (a sketch/shape
+the downstream sweep depends on). Running it inside the every-dirty-edit rebuild would
+freeze the UI, so it is kept off that path and runs in exactly two places:
+
+- a **Run button** on the optimizer step — on demand, for preview;
+- at **write / export** — the real output must be optimized; slowness is acceptable there.
+
+So `build()` gains an `optimize` flag: `build(optimize=False)` for the live viewport
+(optimizers construct but **skip** `optimize()`), `build(optimize=True)` for
+`build_mesh`/write. Element optimizers run inline in build order (before their dependents,
+since mutation is in place); a mesh optimizer runs in `apply_to_mesh` like a grader.
+**Codegen always emits `optimize()`** — never baked coordinates; the exported script
+recomputes faithfully, and only the GUI preview skips it.
+
+**Postponed for v1 (decided):** result **caching** (after Run, the optimized preview shows
+until the next dirty edit, then reverts — the real geometry still comes out at write) and a
+shared **output/console window** for the optimizer report. Both deferred; the console will
+later serve write/build errors too.
+
+### Clamps → classy_blocks "smart points" (the optimizer waits on this)
+
+A clamp pins a mesh vertex and says how it may move (free / on-line / on-plane / on-circle /
+on-curve / fixed). classy_blocks' native flow states the same `(curve, param)` binding
+**three times** — `get_point(t)` for the position, the remembered `param`, and a
+`CurveClamp(position, curve, param)` matched back to the vertex *by coordinate within `TOL`*
+(`grid.py`). The optimizer grid is deliberately **coordinate-addressed** (junctions are bare
+indices, no link back to the construct point), so that redundancy is the seam of a real
+layer decoupling — not sloppiness.
+
+The maintainer is adding **smart points** to classy_blocks: a point carries its own
+constraint (*where* it belongs + *whether* it can move — kept orthogonal, so a constrained
+point can be frozen without losing its binding), and an **`AutoOptimizer`** reads those and
+adds the clamps itself. That collapses the triple-spec to one source.
+
+This **reshapes our optimizer step**, so we build it *after* smart points exist in cb:
+
+- A point's constraint is set **when placing it** — an on-curve point source `(curve ref,
+  param)` resolving to `curve.get_point(param)` (and later on-surface `(surface ref, u, v)`),
+  sitting alongside the existing literal / `Point`-ref point sources. The location is stated
+  once; "fixed vs free" is the only optimization choice.
+- The optimizer step then collapses to roughly `AutoOptimizer(target).optimize()` + options;
+  the embedded clamp editor we sketched **largely dissolves**, needed only for residual
+  manual constraints on vertices that aren't smart points.
+
+So the build order is: **smoothers now**; the optimizer step once cb ships smart points +
+`AutoOptimizer`, targeting that clean API directly rather than a clamp editor we'd then gut.
+(The on-surface case additionally waits on cb surface support — `ParametricSurfaceClamp` is
+function-based — and STL surfaces, both deferred.)
 
 ---
 
@@ -477,13 +574,13 @@ UI are deferred — all ride the proven `pick` foundation, so deferral costs no 
 One-way import rule — `view → model → steps`, never the reverse — enforces the
 separation mechanically:
 
-- `classy_polyscope/steps/` — step types + their `SCHEMA`s, `build()`, `to_lines()`,
+- `classy_foundry/steps/` — step types + their `SCHEMA`s, `build()`, `to_lines()`,
   plus `catalog.py` (the palette). Imports only `classy_blocks`; no `polyscope`.
-- `classy_polyscope/model.py` — the ordered step list, reference resolution, codegen,
+- `classy_foundry/model.py` — the ordered step list, reference resolution, codegen,
   pickle save/load. No `polyscope`.
-- `classy_polyscope/view/` — polyscope rendering, the step-list panel + viewport
+- `classy_foundry/view/` — polyscope rendering, the step-list panel + viewport
   interaction (schema→widget registry, picking). Imports `model`, never the reverse.
-- `classy_polyscope/app.py` — the `ps.show()` + `userCallback` entry point.
+- `classy_foundry/__main__.py` — the `ps.show()` + `userCallback` entry point.
 
 ## Roadmap
 
@@ -528,17 +625,24 @@ separation mechanically:
   `HalfSphere` (`Hemisphere`). Optional trailing cb args omitted → defaults.
 - **Points-file reference curve (References)** — `PointsFileCurve`
   (`cb.LinearInterpolatedCurve`) via the new `points_file` kind; `"curve"` renderer.
+- **Auto-graders (Grading → Automatic)** — `FixedCount`/`Simple`/`Inflation` on the new
+  `HelperStep` base (`cb.Grader(mesh, …).grade()`, via the `apply_to_mesh` hook); a `choice`
+  field kind (combo) for `Simple.take`. **This is what lets Shapes / catalogue solids write
+  a blockMeshDict** — grading is a grader + optional manual operation `Chop`, with *no*
+  per-shape chop code. (Supersedes the earlier "shape grading" plan.)
 
 **Next:**
 
-1. **Shape grading** — the thing blocking every Shape/catalogue-solid from writing
-   `blockMeshDict` (a shape grades via `chop_axial/radial/tangential`, not the operation
-   `chop(axis, count)`; the GUI won't require the `chop_*` shortcuts — design later).
-2. **Stacks** — `Extruded/Revolved/Lofted stack` (the remaining shape family).
-3. **Extract face** — first `DerivedStep` (`name = op.get_face(side)`); pick the op + side.
-4. **Edges / projections / optimizers** — to discuss; the Points-file curve is the
-   foundation (edges on faces, `OnCurve` clamps, projection targets).
-5. **Auto graders** — collapse the 3-chops-per-operation into one step.
+1. **Stacks** — `Extruded/Revolved/Lofted stack` (the remaining shape family).
+2. **Extract face** — first `DerivedStep` (`name = op.get_face(side)`); pick the op + side.
+3. **Smoothers** — `MeshSmoother` (mesh-targeted, like a grader) + `SketchSmoother` (first
+   element-targeted `HelperStep`). Cheap, run inline, no clamps. See **Optimization &
+   smoothing**.
+4. **Optimizers** — *blocked on classy_blocks* smart points + `AutoOptimizer`; built against
+   that clean API once it lands (the Run button + `build(optimize=…)` flow). See
+   **Optimization & smoothing**.
+5. **Edges / projections** — to discuss; the Points-file curve is the foundation (edges on
+   faces, projection targets).
 6. **Patches / projection / transforms** — as their bases land.
 7. **List → viewport highlight** — the reverse of selection (needs our own highlight,
    since Polyscope has no `set_selection`).
@@ -617,12 +721,12 @@ export to add).
   - Shape optimizer
   - Mesh optimizer
 - Grading
-  - ✓ Grade axis *(operations; shape-aware grading still to come)*
+  - ✓ Grade axis *(operations only — shapes grade via an auto-grader, by design)*
   - Grade Edge
   - Automatic:
-    - Fixed count
-    - Simple
-    - Inflation
+    - ✓ Fixed count
+    - ✓ Simple
+    - ✓ Inflation
 - Patches
   - Set patch (one or multiple operation sides)
   - Default
@@ -646,10 +750,6 @@ export to add).
 - **File dialogs / undo** — Save/Open currently use a hardcoded path; a real
   app needs a file-dialog shim and (cheap, via pickle snapshots) undo. Bounded work,
   the main "Polyscope gives no plumbing" papercut.
-- **Property panel reflection** — reuse classy_foundry's per-class metadata
-  (labels/enum choices) or regenerate? Mostly host-neutral.
-- **Curve/surface clamps in codegen** — never emitted from `to_lines()` in
-  classy_foundry; revisit when optimization/clamps come off the deferred list.
 - **GUI framework — view-only escape hatch** *(deferred, not a lock-in)*. Polyscope
   can be reduced to "just the 3D view" under a different GUI framework (Qt, web) two
   ways, both supported: (1) `set_build_gui(False)` + `frame_tick()` driven from an
