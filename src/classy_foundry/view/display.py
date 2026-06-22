@@ -16,6 +16,7 @@ SIDES = ("bottom", "top", "left", "right", "front", "back")
 POINT_RADIUS = 0.02  # relative to scene extent; larger than Polyscope's tiny default
 
 AXES_NAME = "world axes"  # a space => never a valid step name, so it can't collide / be picked
+CURVE_SAMPLES = 100  # polyline resolution for a reference curve
 AXES = (("x", (1.0, 0.0, 0.0)), ("y", (0.0, 1.0, 0.0)), ("z", (0.0, 0.0, 1.0)))  # colour = direction
 
 
@@ -85,6 +86,15 @@ def _render_point(step, context):
     ps.register_point_cloud(step.name, np.asarray([value], float)).set_radius(POINT_RADIUS)
 
 
+def _render_curve(step, context):
+    """A reference curve draws as a polyline through its discretized points."""
+    value = context.get(step)
+    if value is None:
+        return
+    nodes = np.asarray(value.discretize(count=CURVE_SAMPLES), float)
+    ps.register_curve_network(step.name, nodes, "line")
+
+
 def _render_nothing(step, context):
     """Steps with no own geometry (configuring steps like chop/patch) render nothing."""
 
@@ -96,6 +106,7 @@ RENDERERS = {
     "shape": _render_shape,
     "face": _render_face,
     "point": _render_point,
+    "curve": _render_curve,
 }
 
 

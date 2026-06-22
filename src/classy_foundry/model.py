@@ -117,7 +117,8 @@ class Model:
         self.build_mesh().write(path)
 
     def to_script(self, blockmesh_path="system/blockMeshDict"):
-        lines = ["import classy_blocks as cb", expr_import_line(), "", "mesh = cb.Mesh()", ""]
+        lines = ["import classy_blocks as cb", "import numpy as np", expr_import_line(),
+                 "", "mesh = cb.Mesh()", ""]
         for step in self.steps:
             lines += step.to_lines()
             if step.adds_to_mesh:

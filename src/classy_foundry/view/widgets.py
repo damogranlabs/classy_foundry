@@ -15,6 +15,7 @@ WIDGETS = {
     "point3": lambda value: psim.InputFloat3("##v", value),
     "float": lambda value: psim.InputText("##v", str(value)),
     "int": lambda value: psim.InputText("##v", str(value)),
+    "points_file": lambda value: psim.InputText("##v", str(value)),  # a path to a points file
 }
 
 

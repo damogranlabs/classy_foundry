@@ -58,6 +58,11 @@ def expr_import_line():
     return "from numpy import " + ", ".join(_EXPR_NAMES)
 
 
+def load_points(path):
+    """Read an (N, 3) point array from a whitespace/CSV text file (e.g. an airfoil)."""
+    return numpy.loadtxt(path)
+
+
 # kind -> Python-source codegen. Pairs with the view's kind -> widget registry.
 # `float`/`int` are expression strings, emitted verbatim. `point`/`point_list` codegen each
 # entry via _point_code (a name for a ref, else a list).
@@ -68,6 +73,7 @@ CODEGEN = {
     "point": lambda v: _point_code(v),
     "point_list": lambda v: "[" + ", ".join(_point_code(e) for e in v) + "]",
     "index_list": lambda v: repr([[int(i) for i in row] for row in v]),
+    "points_file": lambda v: f"np.loadtxt({v!r})",
     "ref": lambda step: step.name if step is not None else "None",
 }
 
@@ -140,6 +146,7 @@ RESOLVE = {
     "point_list": lambda v, ctx: [_resolve_point(e, ctx) for e in v],
     "float": lambda v, ctx: eval_expr(v),
     "int": lambda v, ctx: int(eval_expr(v)),
+    "points_file": lambda v, ctx: load_points(v),
 }
 
 

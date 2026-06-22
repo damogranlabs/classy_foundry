@@ -7,6 +7,7 @@ and add it here. The palette groups these by `category`, preserving this list's 
 
 from .box import Box
 from .chop import Chop
+from .curve import PointsFileCurve
 from .extrude import Extrude
 from .face import Face
 from .loft import Loft
@@ -32,6 +33,7 @@ from .wedge import Wedge
 CATALOG = [
     # References
     Point,
+    PointsFileCurve,
     # Flat
     Face,
     MappedSketch,

@@ -102,6 +102,18 @@ Implication for step classes: they must pickle cleanly — restrict any
 values are plain floats, no unit conversion at the classy_blocks boundary. Scale is
 handled by classy_blocks' own `mesh.settings.scale`.
 
+**Numeric fields are expression strings (implemented).** A scalar `float`/`int` field
+stores its value as a **string** (`"pi/2"`, `"deg2rad(90)"`, `"5*2"`), not a number — so
+angles/distances/counts read naturally and the exported script stays hand-written-looking
+(`cb.Revolve(face, pi/2, …)`). It is evaluated in a **math-only namespace** (`eval_expr`,
+a restricted `eval` over a curated set of `numpy` names — `pi`, `sin`, `deg2rad`, …) at
+**build** time, and emitted **verbatim** in codegen; the exported script imports those
+names (`expr_import_line()` → `from numpy import …`). A bad/mid-edit expression simply
+fails to build (best-effort, so the step just drops out of the preview until it parses).
+Numbers still pass through unchanged, so old pickles/defaults keep working. This is the
+one place a "plain float" is deliberately a string — and it stays inside the schema-driven
+path (a `kind`, a `WIDGETS` text entry, a `RESOLVE`/`CODEGEN` pair), no special-casing.
+
 ---
 
 ## Data model — the step list
@@ -138,6 +150,13 @@ the work uniformly for every step: `RESOLVE` (value → live `cb` arg at build) 
 `REF_EXTRACT` (the embedded refs, so rename-safety and the forward-ref check cover
 them). This is the natural extension of the schema-driven design — adding a step type is
 still "declare a `SCHEMA`."
+
+**`points_file` kind (implemented).** A field that holds a **file path** to a list of 3D
+points; `RESOLVE` loads it with `numpy.loadtxt` at build, `CODEGEN` emits
+`np.loadtxt('path')` (the script gains `import numpy as np`). Used by the **Points file**
+reference curve (`cb.LinearInterpolatedCurve`). The recipe stays a tiny path — the points
+re-load from the file on every build and in the exported script, so editing the file flows
+through (no baked points; flag if a "freeze" option is ever wanted).
 
 **This supersedes the earlier "element owns a hidden chop/patch `calls` log".** A chop
 is now its own visible step in the list, uniform with everything else — matching the
@@ -192,6 +211,20 @@ Two patterns get their own small base when their first member lands:
 - `OptimizerStep` — `opt = cb.SketchOptimizer(target); opt.optimize()` (helper object + call).
 - mesh-level config — default patch / auto-graders / scale act on the mesh, not a step.
 
+**Marker sub-bases under `ProducingStep` (implemented).** Where a family shares attrs
+*and* needs a common type for `accepts`, a thin intermediate base carries both — no
+`build()`/`to_lines()` logic, just declarations:
+
+- `SketchStep` (`render_kind="sketch_faces"`, `adds_to_mesh=False`) — the flat-sketch
+  family. `DiskSketch` adds the `(centre, rim, normal)` schema the round disks share;
+  `MappedSketch` also subclasses it (overriding to its own `"sketch"` raw renderer), so a
+  hand-built sketch is accepted wherever the catalogue disks are.
+- `ShapeStep` (`render_kind="shape"`, `adds_to_mesh=True`) — swept solids. `CatalogueShape`
+  adds the round-solid submenu path. A shape's sketch input is `accepts=SketchStep`.
+
+So a Shape accepts *any* sketch (catalogue or `MappedSketch`) by `accepts=SketchStep`, and
+the marker base is the single source of that "is-a sketch/shape" truth.
+
 ### A concrete step is pure declaration
 
 ```python
@@ -209,11 +242,11 @@ plus one `catalog` line.
 
 ### Display dispatch stays DRY
 
-A step declares a `render_kind` string (`"operation"`, `"profile"`, `"curve"`,
-`"point"`, or `None`); `RENDERERS` maps that string → one renderer, so every operation
-type shares one renderer — declared, not coded per type. Steps stay free of
-`polyscope` (the renderer lives in `view`, keyed by the declared string), so the
-one-way `view → model` rule holds.
+A step declares a `render_kind` string (`"operation"`, `"sketch"`, `"sketch_faces"`,
+`"shape"`, `"face"`, `"point"`, `"curve"`, or `None`); `RENDERERS` maps that string → one
+renderer, so every operation type shares one renderer — declared, not coded per type.
+Steps stay free of `polyscope` (the renderer lives in `view`, keyed by the declared
+string), so the one-way `view → model` rule holds.
 
 ### Gradual, not speculative
 
@@ -255,21 +288,38 @@ three uses, all satisfied by "valid identifier."
 Each step renders **from its own built `cb` value (or raw data)**, not from
 `mesh.assemble()` — so the viewport works even while the mesh is incomplete or not
 validly connected (assemble would refuse). `sync_display` builds the model once into a
-context `{step: cb_value}`, wipes (`reset_selection` + `remove_all_structures`), and
-renders each step via a `render_kind → renderer` registry (see **Step class hierarchy**),
-then re-adds the editor's transient overlay.
+context `{step: cb_value}`, wipes (`reset_selection` + `remove_all_structures`), draws the
+**world-axes triad**, then renders each step via a `render_kind → renderer` registry (see
+**Step class hierarchy**), and finally re-adds the editor's transient overlay.
+
+A shared `_quad_mesh(point_arrays)` helper builds `(vertices, quad_faces)` from a list of
+4-point arrays — reused by the operation, face, sketch-faces, and shape renderers (one quad
+per array), so the quad-building lives in one place.
 
 Renderers (keyed by the step's declared `render_kind`):
 
-- `"operation"` (Box, Extrude, …) — a 6-quad surface from `op.get_face(side)` for
-  `side ∈ {bottom, top, left, right, front, back}`. **Those names are classy_blocks'
-  patch orientations**, so a picked face maps straight to a patch side — no axis/
-  orientation index to memorize (the basis for the future grade/tag-by-pick).
+- `"operation"` (Box, Extrude, Revolve, Loft, Wedge) — a 6-quad surface from
+  `op.get_face(side)` for `side ∈ {bottom, top, left, right, front, back}`. **Those names
+  are classy_blocks' patch orientations**, so a picked face maps straight to a patch side —
+  no axis/orientation index to memorize (the basis for the future grade/tag-by-pick).
 - `"sketch"` (MappedSketch) — a pickable point cloud + a quad surface, drawn from the
   step's *raw* positions/quads so an in-progress (unbuildable) sketch still shows.
+- `"sketch_faces"` (catalogue disks/oval) — the quad surface of the built sketch's
+  `.faces` (each a `point_array`).
+- `"shape"` (ExtrudedShape/Revolved/Lofted, Cylinder, …) — the six named sides of *each*
+  operation in `shape.operations`.
 - `"face"` (Face) — a single flat quad from `face.point_array`.
 - `"point"` (Point) — a one-point cloud.
+- `"curve"` (Points-file curve) — a polyline through `curve.discretize(CURVE_SAMPLES)` via
+  `register_curve_network(name, nodes, "line")`.
 - `None` (configuring steps like Chop) — nothing.
+
+**World-axes triad (implemented).** A fixed origin gizmo — three ambient (true-length)
+vector quantities on an origin point cloud, x=red/y=green/z=blue (the colour tuple *is* the
+unit direction) — re-added every rebuild inside `sync_display` (not the overlay slot, which
+the sketcher owns). Its structure name has a space (`"world axes"`), so it can never collide
+with a step name or resolve as a selection. Polyscope has **no built-in world-axes gizmo**;
+this is the ~5-line vector-quantity substitute.
 
 This replaces classy_foundry's two-tier `Part.*` scheme. (The fully assembled & graded
 cell mesh from `mesh.assemble()` could be an optional on-demand "show final cells" view
@@ -357,10 +407,13 @@ below) to never overflow a narrow window. Point clouds render with an enlarged
 - **Selection (viewport → list)** — *implemented*. A bare viewport click selects the
   structure; we mirror `ps.get_selection()` into `session["active"]` each frame
   (`structure_name → model.step_by_name`, `::`-suffix stripped for sketch substructures),
-  synced only on change. `sync_display` calls `ps.reset_selection()` before
-  `remove_all_structures()` so a stale selection can't be resolved against a replaced
-  structure (the bug that threw `interpretPickResult`); the reader also guards + resets
-  defensively.
+  synced only on change (the dedup key is `session["last_selection"]`). `sync_display`
+  calls `ps.reset_selection()` before `remove_all_structures()` so a stale selection can't
+  be resolved against a replaced structure (the bug that threw `interpretPickResult`); the
+  reader also guards + resets defensively. **An empty selection is treated as transient** —
+  `apply_selection` returns early on it *without* clearing `last_selection` (an empty
+  selection never changes `active` anyway). That last part is load-bearing for the pick fix
+  below.
 - **Pick a step to fill an input (the dropper)** — *implemented for points and `ref`
   fields*. Each input shows a `pick` button (eyedropper); clicking it toggles
   `session["pick"] = (step, field, index)` and shows a "Pick mode" hint. **A bare click
@@ -369,8 +422,18 @@ below) to never overflow a narrow window. Point clouds render with an enlarged
   ancestor* — `picked in model.candidates(step, accepts)` (point inputs accept `Point`; a
   `ref` accepts its `accepts`), which enforces type *and* no-forward-reference. Pick mode
   pauses selection and the sketcher so the click isn't double-handled.
-- **Sweep-to-3D** *(Extrude done)* — an operation step referencing a profile; pick a Face
-  for `Extrude.base` via the dropper. Loft/Revolve (axis / 2nd profile) to follow.
+  - **Pick must not steal the edited selection (fixed).** The same click that fills a
+    field also drives Polyscope's own click-selection, which it commits a frame or two
+    *later* (on mouse release). So the dropper **pre-seeds** `session["last_selection"]`
+    with the structure it just consumed; when Polyscope's selection finally lands, the
+    mirror dedup absorbs it and the editor stays on the step being filled. This only works
+    because an empty selection no longer wipes `last_selection` (see Selection) — otherwise
+    a transient empty frame in the gap would reset the pre-seed. (A plain `reset_selection`
+    in the callback does *not* work: Polyscope re-commits after the callback runs.)
+- **Sweep-to-3D** *(Extrude, Revolve, Loft, Wedge done)* — an operation step referencing a
+  profile; pick a Face for `Extrude.base`/`Loft`/`Revolve`/`Wedge` via the dropper. Revolve
+  axis is a literal `point3`; origin is a reference-or-literal point. The Shape family
+  (Extruded/Revolved/Lofted) sweeps a **sketch** the same way.
 - **Grade / tag / project** *(Grade axis done as a step)* — the spatial form is: pick a
   face → named side via `get_face` → chop / patch / projection. Same picking foundation.
 
@@ -385,10 +448,12 @@ real output.
 
 | Step type | classy_blocks | Spatial projection (clarity win) |
 |---|---|---|
-| Point / Curve / Surface | points, curves, surfaces | place/pick points; import curve files (airfoils); load STL surfaces as pickable meshes |
-| `Face` | 4 points + curved edges | pick/place corners; edge types per side |
-| `MappedSketch` | positions + quads | the sketcher *(implemented)* — kept **separate** from Face (decided) |
-| `Box`/`Extrude`/`Loft`/`Revolve` | sweep a profile | reference a profile step; live preview; pick points for revolve axis / 2nd loft profile |
+| Point *(done)* / Curve *(done)* / Surface | points, curves, surfaces | place/pick points; **Points-file curve** *(implemented — `LinearInterpolatedCurve` from a file)*; load STL surfaces as pickable meshes *(deferred)* |
+| `Face` *(done)* | 4 points + curved edges | pick/place corners; edge types per side *(edges deferred)* |
+| `MappedSketch` *(done)* | positions + quads | the sketcher *(implemented)* — kept **separate** from Face (decided); now a `SketchStep` so it feeds Shapes |
+| Sketch catalogue *(done)* | Disk/Oval/… sketches | declared from points; `"sketch_faces"` render |
+| `Box`/`Extrude`/`Loft`/`Revolve`/`Wedge` *(done)* | sweep a profile | reference a profile step; live preview; pick points for revolve axis / 2nd loft profile |
+| Shapes & catalogue solids *(done)* | sweep a sketch / ready-made solids | Extruded/Revolved/Lofted shape (sketch ref); Cylinder/Frustum/Elbow/rings/spheres (points). **Need shape-aware grading before they write.** |
 | `Chop` (grade) | `chop(axis, …)` | *implemented* (Grade axis step); spatial form (pick face → axis) later |
 | `SetPatch` (tag) | `set_patch(side, name)` | *deferred* — pick face(s) → name; `set_default_patch` not required to write |
 | `Project` | `project_*(geometry)` | *deferred* — pick edge/face → pick target surface/curve |
@@ -437,71 +502,99 @@ separation mechanically:
   identity references; pickle + codegen over steps; forward-ref guard.
 - **Step-list UI** — editable name per line, reorder/delete, **data-driven add-step
   palette** (nested popup grouped by `category`), selection-driven editor.
-- **Step types** — `Point`, `Face`, `Box`, `Extrude`, `MappedSketch`, `Chop`.
+- **Step types** — `Point`, `Face`, `Box`, `Extrude`, `MappedSketch`, `Chop` (and all the
+  operations/sketches/shapes/curve listed below).
 - **Closed the loop** — Write blockMeshDict (verified output); script export runs standalone.
 - **Literal-or-ref point inputs** — Face corners / Box points are a literal *or* a `Point`.
 - **Viewport selection + dropper picking** — bare click selects a step (viewport→list);
   the `pick` dropper fills a point entry or a `ref` field (`Extrude.base`) from a clicked
-  structure, accept-checked via `candidates`; stale-selection crash fixed.
+  structure, accept-checked via `candidates`; stale-selection crash fixed; **pick no longer
+  steals the edited selection** (the `last_selection` pre-seed + transient-empty handling).
 - **UI shell** — own resizable window; width-filling inputs; enlarged point spheres.
+- **Palette order** — follows `CATALOG` insertion order, not alphabetical (the `sorted()`
+  in the menu was removed; `CATALOG` is grouped + ordered to match this doc's palette).
+- **World-axes triad** — fixed origin gizmo (x/y/z = red/green/blue ambient vectors).
+- **More operations** — `Revolve`, `Loft`, `Wedge` (pure `ProducingStep` declarations,
+  all `"operation"` render).
+- **Expression inputs** — `float`/`int` fields are math-expression strings (`pi/2`,
+  `deg2rad(90)`), eval'd at build, emitted verbatim; `eval_expr` + `expr_import_line`.
+- **Sketch catalogue (Flat)** — `Circle`/`Circle (1 core)`/`Half circle`/`Boxed circle`/
+  `Oval` on `SketchStep`/`DiskSketch`; `"sketch_faces"` renderer; `MappedSketch` rebased
+  onto `SketchStep` so it feeds Shapes.
+- **Shapes (Solids → Shapes)** — `ExtrudedShape`/`RevolvedShape`/`LoftedShape`, sweeping
+  any `SketchStep`; `"shape"` renderer over `shape.operations`.
+- **Catalogue solids (Solids → Catalogue)** — `Cylinder`, `Frustum`, `Elbow`,
+  `ExtrudedRing`, `RevolvedRing` (Face cross-section), `EighthSphere`/`QuarterSphere`/
+  `HalfSphere` (`Hemisphere`). Optional trailing cb args omitted → defaults.
+- **Points-file reference curve (References)** — `PointsFileCurve`
+  (`cb.LinearInterpolatedCurve`) via the new `points_file` kind; `"curve"` renderer.
 
 **Next:**
 
-1. **More operations** — `Loft`, `Revolve`, `Wedge`, then Shapes/Stacks (pure declarations).
-2. **Extract face** — first `DerivedStep` (`name = op.get_face(side)`); pick the op + side.
-3. **Auto graders** — collapse the 3-chops-per-operation into one step.
-4. **Patches / projection / transforms / optimizers** — as their bases land.
-5. **List → viewport highlight** — the reverse of selection (needs our own highlight,
+1. **Shape grading** — the thing blocking every Shape/catalogue-solid from writing
+   `blockMeshDict` (a shape grades via `chop_axial/radial/tangential`, not the operation
+   `chop(axis, count)`; the GUI won't require the `chop_*` shortcuts — design later).
+2. **Stacks** — `Extruded/Revolved/Lofted stack` (the remaining shape family).
+3. **Extract face** — first `DerivedStep` (`name = op.get_face(side)`); pick the op + side.
+4. **Edges / projections / optimizers** — to discuss; the Points-file curve is the
+   foundation (edges on faces, `OnCurve` clamps, projection targets).
+5. **Auto graders** — collapse the 3-chops-per-operation into one step.
+6. **Patches / projection / transforms** — as their bases land.
+7. **List → viewport highlight** — the reverse of selection (needs our own highlight,
    since Polyscope has no `set_selection`).
 
 **Deferred (decided):** palette categorization polish, the transform UI (gizmo vs
-numeric, in-place vs derived copy/array), Sources beyond curve files, non-planar
-sketches.
+numeric, in-place vs derived copy/array), STL surfaces, non-planar sketches, a file-dialog
+picker for `points_file` (path is plain text for now). A standalone `Vector` reference was
+tried and **reverted** (an arrow-rendered point) — a proper `Axis` belongs in classy_blocks
+core; reference-point + literal axis covers the vast majority. `QuarterDisk`/`Annulus`/full
+`Sphere` are absent only because classy_blocks doesn't export them at top level (one-line cb
+export to add).
 
-**Step palette contents**
+**Step palette contents** (✓ = implemented)
 
 - References
-  - Single point (fixed)
-  - Points file (a list of 3d points for an interpolated curve)
+  - ✓ Single point (fixed)
+  - ✓ Points file (a list of 3d points → `LinearInterpolatedCurve`)
   - Surface (path to an STL surface)
 - Flat
-  - Face (specify points manually)
+  - ✓ Face (specify points manually)
   - Extract face (from an operation)
-  - Mapped sketch (with an editor)
+  - ✓ Mapped sketch (with an editor)
   - Sketches catalogue:
-    - Quarter circle
-    - Half circle
-    - Circle
-    - Circle (1 core)
-    - Oval
-    - Boxed circle
+    - Quarter circle *(absent — `QuarterDisk` not cb-exported)*
+    - ✓ Half circle
+    - ✓ Circle
+    - ✓ Circle (1 core)
+    - ✓ Oval
+    - ✓ Boxed circle
     - Splined rounds (added later)
-    - Ring
+    - Ring *(absent — `Annulus` not cb-exported)*
 - Solids
   - Simple
-    - Box
-    - Extrude
-    - Rotate
-    - Loft
-    - Wedge
+    - ✓ Box
+    - ✓ Extrude
+    - ✓ Rotate *(= `Revolve` operation)*
+    - ✓ Loft
+    - ✓ Wedge
   - Shapes
-    - Extruded shape
-    - Revolved shape
-    - Lofted shape
+    - ✓ Extruded shape
+    - ✓ Revolved shape
+    - ✓ Lofted shape
   - Stacks
   - Extruded stack
     - Revolved stack
     - Lofted stack
-  - Solids catalogue:
-    - Cylinder
-    - Conical frustum
-    - Elbow
-    - Extruded ring
-    - Revolved ring
-    - Eighth sphere
-    - Quarter sphere
-    - Half sphere
-    - Sphere
+  - Solids catalogue *(`("Solids", "Catalogue")`)*:
+    - ✓ Cylinder
+    - ✓ Conical frustum
+    - ✓ Elbow
+    - ✓ Extruded ring
+    - ✓ Revolved ring
+    - ✓ Eighth sphere
+    - ✓ Quarter sphere
+    - ✓ Half sphere *(`Hemisphere`)*
+    - Sphere *(absent — full `Sphere` not cb-exported)*
 - Modifiers
   - copy
   - Translate
@@ -524,11 +617,12 @@ sketches.
   - Shape optimizer
   - Mesh optimizer
 - Grading
-  - Grade axis
+  - ✓ Grade axis *(operations; shape-aware grading still to come)*
   - Grade Edge
-  - Auto: fixed count
-  - Auto: simple
-  - Auto: inflation
+  - Automatic:
+    - Fixed count
+    - Simple
+    - Inflation
 - Patches
   - Set patch (one or multiple operation sides)
   - Default
