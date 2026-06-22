@@ -6,16 +6,15 @@ work plane (origin + normal) is GUI-only metadata for placing viewport clicks â€
 constructor argument, so it lives outside `SCHEMA` but is still pickled.
 """
 
-from .base import ProducingStep
+from .sketches import SketchStep
 
 
-class MappedSketch(ProducingStep):
+class MappedSketch(SketchStep):
     cb_name = "MappedSketch"
     default_name = "sketch"
-    adds_to_mesh = False
-    category = ("Flat",)
+    category = ("Flat",)  # a top-level Flat item, not part of the disk catalogue
     label = "Mapped sketch"
-    render_kind = "sketch"
+    render_kind = "sketch"  # its own raw point/quad renderer (shows an in-progress sketch)
     SCHEMA = {
         "positions": {"kind": "point_list", "label": "Points", "default": []},
         "quads": {"kind": "index_list", "label": "Quads", "default": []},

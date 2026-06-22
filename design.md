@@ -508,7 +508,15 @@ sketches.
   - Revolve
   - Scale
   - Modify edge
-  - Project (one or more faces)
+    - Arc (midpoint)
+    - Arc (origin)
+    - Arc (angle and axis)
+    - Project (duplicated in project)
+    - On Curve
+  - Project:
+    - Point
+    - Edge (duplicated in modify edge)
+    - Face
 - Optimizers
   - Sketch smoother
   - Shape smoother

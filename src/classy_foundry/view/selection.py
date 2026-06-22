@@ -4,21 +4,29 @@ Polyscope selects a structure on click; we read it each frame and make the match
 step active. Synced only on *change*, so selecting a step in the list isn't overwritten
 by the stale viewport selection. Structure names equal step names; sketch substructures
 are suffixed (`name::points`), stripped here.
+
+`last_selection` is the structure we last reacted to — the dedup that stops a held
+selection from re-firing. A *pick* pre-seeds it with the structure it just consumed
+(`picker`), so the mirror won't move the editor onto the picked step. Polyscope commits
+its own click-selection a frame or two later (on mouse release), so an *empty* selection
+is treated as a transient and leaves both `active` and that prediction untouched — it
+must not wipe the pre-seed before the real selection lands.
 """
 
 import polyscope as ps
 
 
 def apply_selection(model, session, name):
-    """Set the active step from a selected structure `name` (None = nothing selected).
+    """Set the active step from a selected structure `name` (empty = nothing selected).
 
     Returns True if the active step changed. Pure (no polyscope) for testability.
     """
+    if not name:
+        return False  # transient/empty: never changes active, and must not clear the
+        #               last_selection prediction a pending pick may have pre-seeded
     if name == session.get("last_selection"):
         return False
     session["last_selection"] = name
-    if not name:
-        return False
     step = model.step_by_name(name.split("::")[0])
     if step is None or step is session.get("active"):
         return False

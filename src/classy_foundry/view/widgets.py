@@ -9,10 +9,12 @@ import polyscope.imgui as psim
 
 # kind -> callable(value) -> (changed, new_value). Labels are hidden ("##v"); the panel
 # draws the visible label and sets the item width, so widgets fill the available space.
+# `float`/`int` are *expression strings* (e.g. "pi/2"), so they edit as free text and are
+# evaluated at build time (see steps.base.eval_expr); str() coerces legacy numeric values.
 WIDGETS = {
     "point3": lambda value: psim.InputFloat3("##v", value),
-    "float": lambda value: psim.InputFloat("##v", value),
-    "int": lambda value: psim.InputInt("##v", value),
+    "float": lambda value: psim.InputText("##v", str(value)),
+    "int": lambda value: psim.InputText("##v", str(value)),
 }
 
 

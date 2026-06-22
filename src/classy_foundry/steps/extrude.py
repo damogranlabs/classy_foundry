@@ -13,5 +13,5 @@ class Extrude(ProducingStep):
     render_kind = "operation"
     SCHEMA = {
         "base": {"kind": "ref", "label": "Profile", "default": None, "accepts": Face},
-        "amount": {"kind": "float", "label": "Distance", "default": 1.0},
+        "amount": {"kind": "float", "label": "Distance", "default": "1.0"},
     }

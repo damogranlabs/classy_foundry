@@ -32,7 +32,7 @@ _PALETTE_TREE = _build_palette_tree(CATALOG)
 def _render_palette_menu(node):
     """Render one menu level (submenus then leaf items); return the chosen class or None."""
     chosen = None
-    for name in sorted(part for part in node if part is not None):
+    for name in (part for part in node if part is not None):  # catalog order, not alphabetical
         if psim.BeginMenu(name):
             chosen = _render_palette_menu(node[name]) or chosen
             psim.EndMenu()

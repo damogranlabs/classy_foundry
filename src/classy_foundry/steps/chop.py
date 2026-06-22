@@ -15,6 +15,6 @@ class Chop(ConfiguringStep):
     SCHEMA = {
         "target": {"kind": "ref", "label": "Operation", "default": None,
                    "accepts": lambda step: step.adds_to_mesh},
-        "axis": {"kind": "int", "label": "Axis (0/1/2)", "default": 0},
-        "count": {"kind": "int", "label": "Cells", "default": 10},
+        "axis": {"kind": "int", "label": "Axis (0/1/2)", "default": "0"},
+        "count": {"kind": "int", "label": "Cells", "default": "10"},
     }

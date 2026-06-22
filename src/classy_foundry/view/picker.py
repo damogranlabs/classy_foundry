@@ -32,6 +32,10 @@ def handle_pick(model, session):
     session["pick"] = None  # a single click resolves pick mode, hit or miss
 
     result = ps.pick(screen_coords=psim.GetMousePos())
+    # The same click also drives Polyscope's own selection (set after this callback, so a
+    # reset here won't stick). Record it as already-seen so the selection mirror won't move
+    # the editor off the step being filled onto the picked one.
+    session["last_selection"] = result.structure_name if result.is_hit else None
     picked = model.step_by_name(result.structure_name.split("::")[0]) if result.is_hit else None
     step, field, index = target
     if picked is None or picked not in model.candidates(step, _accepts(step, field)):

@@ -17,13 +17,54 @@ name, so renaming is always safe.
 """
 
 import classy_blocks as cb
+import numpy
 
-# kind -> Python-literal codegen. Pairs with the view's kind -> widget registry.
-# `point`/`point_list` codegen each entry via _point_code (a name for a ref, else a list).
+# A scalar numeric field's value is an **expression string** (e.g. "pi/2", "deg2rad(90)"),
+# evaluated in this math-only namespace for the live value and emitted verbatim in codegen
+# (so the script reads like hand-written classy_blocks). The same names are imported by the
+# exported script (see `expr_import_line`).
+_EXPR_NAMES = (
+    "pi",
+    "e",
+    "sin",
+    "cos",
+    "tan",
+    "arcsin",
+    "arccos",
+    "arctan",
+    "arctan2",
+    "sqrt",
+    "exp",
+    "log",
+    "radians",
+    "degrees",
+    "deg2rad",
+    "abs",
+)
+EXPR_NAMESPACE = {name: getattr(numpy, name) for name in _EXPR_NAMES}
+
+
+def eval_expr(value):
+    """Evaluate a numeric field's expression string; pass numbers through unchanged
+    (defaults / legacy pickles). Raises on a bad expression, so a mid-edit step just
+    fails to build (best-effort) until it parses again."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(eval(value, {"__builtins__": {}}, EXPR_NAMESPACE))
+
+
+def expr_import_line():
+    """The import the exported script needs so emitted expressions resolve."""
+    return "from numpy import " + ", ".join(_EXPR_NAMES)
+
+
+# kind -> Python-source codegen. Pairs with the view's kind -> widget registry.
+# `float`/`int` are expression strings, emitted verbatim. `point`/`point_list` codegen each
+# entry via _point_code (a name for a ref, else a list).
 CODEGEN = {
     "point3": lambda v: repr([float(x) for x in v]),
-    "float": lambda v: repr(float(v)),
-    "int": lambda v: repr(int(v)),
+    "float": lambda v: str(v),
+    "int": lambda v: str(v),
     "point": lambda v: _point_code(v),
     "point_list": lambda v: "[" + ", ".join(_point_code(e) for e in v) + "]",
     "index_list": lambda v: repr([[int(i) for i in row] for row in v]),
@@ -36,9 +77,9 @@ class Step:
     default_name: str = "step"
     adds_to_mesh: bool = False
     SCHEMA: dict = {}
-    category: tuple = ()   # palette path, e.g. ("Solids", "Simple"); nests into submenus
-    label: str = ""        # palette menu label (falls back to the class name)
-    render_kind = None     # view.display dispatch key (e.g. "operation"); None = not drawn
+    category: tuple = ()  # palette path, e.g. ("Solids", "Simple"); nests into submenus
+    label: str = ""  # palette menu label (falls back to the class name)
+    render_kind = None  # view.display dispatch key (e.g. "operation"); None = not drawn
 
     def __init__(self, name="", **values):
         self.name = name
@@ -68,6 +109,7 @@ class Step:
 
 # --- point inputs: a value is either a literal [x, y, z] or a Point step (a reference) ---
 
+
 def _is_ref(entry):
     return isinstance(entry, Step)
 
@@ -96,22 +138,26 @@ RESOLVE = {
     "ref": lambda v, ctx: ctx[v],
     "point": _resolve_point,
     "point_list": lambda v, ctx: [_resolve_point(e, ctx) for e in v],
+    "float": lambda v, ctx: eval_expr(v),
+    "int": lambda v, ctx: int(eval_expr(v)),
 }
+
+
+def resolve_value(value, spec, context):
+    """A stored field value -> its live cb argument (eval'd expr, resolved ref, …).
+    Kinds with no resolver (point3, index_list) pass through unchanged."""
+    resolver = RESOLVE.get(spec["kind"])
+    return resolver(value, context) if resolver else value
 
 
 class ProducingStep(Step):
     """A step that constructs a new value: `name = cb.X(args...)`."""
 
     def build(self, context):
-        args = [self._resolve(self.values[f], spec, context) for f, spec in self.SCHEMA.items()]
+        args = [resolve_value(self.values[f], spec, context) for f, spec in self.SCHEMA.items()]
         value = getattr(cb, self.cb_name)(*args)
         context[self] = value
         return value
-
-    @staticmethod
-    def _resolve(value, spec, context):
-        resolver = RESOLVE.get(spec["kind"])
-        return resolver(value, context) if resolver else value
 
     def to_lines(self):
         args = ", ".join(CODEGEN[spec["kind"]](self.values[f]) for f, spec in self.SCHEMA.items())
@@ -136,13 +182,18 @@ class ConfiguringStep(Step):
 
     def build(self, context):
         target = context[self._target()]
-        getattr(target, self.cb_method)(**{f: self.values[f] for f, _ in self._kwargs_fields()})
+        kwargs = {
+            f: resolve_value(self.values[f], spec, context) for f, spec in self._kwargs_fields()
+        }
+        getattr(target, self.cb_method)(**kwargs)
         context[self] = target
         return target
 
     def to_lines(self):
         target = self._target()
-        kwargs = ", ".join(f"{f}={CODEGEN[spec['kind']](self.values[f])}" for f, spec in self._kwargs_fields())
+        kwargs = ", ".join(
+            f"{f}={CODEGEN[spec['kind']](self.values[f])}" for f, spec in self._kwargs_fields()
+        )
         name = target.name if target is not None else "None"
         return [f"{name}.{self.cb_method}({kwargs})"]
 

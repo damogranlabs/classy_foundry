@@ -15,28 +15,34 @@ import polyscope as ps
 SIDES = ("bottom", "top", "left", "right", "front", "back")
 POINT_RADIUS = 0.02  # relative to scene extent; larger than Polyscope's tiny default
 
+AXES_NAME = "world axes"  # a space => never a valid step name, so it can't collide / be picked
+AXES = (("x", (1.0, 0.0, 0.0)), ("y", (0.0, 1.0, 0.0)), ("z", (0.0, 0.0, 1.0)))  # colour = direction
+
 
 def points_cloud_name(sketch_name):
     return f"{sketch_name}::points"
 
 
-def operation_geometry(operation):
-    """(vertices, quad_faces) for one operation -- one quad per named side."""
+def _quad_mesh(point_arrays):
+    """(vertices, quad_faces) from a list of 4-point arrays -- one quad each."""
     vertices, faces = [], []
-    for side in SIDES:
-        corners = np.asarray(operation.get_face(side).point_array)
+    for corners in point_arrays:
         base = len(vertices)
-        vertices.extend(corners.tolist())
+        vertices.extend(np.asarray(corners, float).tolist())
         faces.append([base, base + 1, base + 2, base + 3])
     return np.asarray(vertices), np.asarray(faces)
+
+
+def operation_geometry(operation):
+    """(vertices, quad_faces) for one operation -- one quad per named side."""
+    return _quad_mesh([operation.get_face(side).point_array for side in SIDES])
 
 
 def _render_operation(step, context):
     value = context.get(step)
     if value is None:
         return
-    vertices, faces = operation_geometry(value)
-    ps.register_surface_mesh(step.name, vertices, faces)
+    ps.register_surface_mesh(step.name, *operation_geometry(value))
 
 
 def _render_sketch(step, context):
@@ -52,7 +58,24 @@ def _render_face(step, context):
     value = context.get(step)
     if value is None:
         return
-    ps.register_surface_mesh(step.name, np.asarray(value.point_array), np.array([[0, 1, 2, 3]]))
+    ps.register_surface_mesh(step.name, *_quad_mesh([value.point_array]))
+
+
+def _render_sketch_faces(step, context):
+    """A built sketch (Disk, Oval, …) draws as the quad surface of its `.faces`."""
+    value = context.get(step)
+    if value is None:
+        return
+    ps.register_surface_mesh(step.name, *_quad_mesh([face.point_array for face in value.faces]))
+
+
+def _render_shape(step, context):
+    """A shape (ExtrudedShape, …) draws as the six named sides of each of its operations."""
+    value = context.get(step)
+    if value is None:
+        return
+    arrays = [op.get_face(side).point_array for op in value.operations for side in SIDES]
+    ps.register_surface_mesh(step.name, *_quad_mesh(arrays))
 
 
 def _render_point(step, context):
@@ -69,9 +92,21 @@ def _render_nothing(step, context):
 RENDERERS = {
     "operation": _render_operation,
     "sketch": _render_sketch,
+    "sketch_faces": _render_sketch_faces,
+    "shape": _render_shape,
     "face": _render_face,
     "point": _render_point,
 }
+
+
+def _render_axes():
+    """A fixed world-origin triad (x=red, y=green, z=blue) so axes/orientation are legible.
+    Model-independent, so re-added on every rebuild rather than living in the overlay slot."""
+    cloud = ps.register_point_cloud(AXES_NAME, np.zeros((1, 3)))
+    cloud.set_radius(POINT_RADIUS)
+    for axis, colour in AXES:
+        cloud.add_vector_quantity(axis, np.asarray([colour], float), vectortype="ambient",
+                                  enabled=True, color=colour)
 
 
 def sync_display(model, overlay=None):
@@ -79,6 +114,7 @@ def sync_display(model, overlay=None):
     context = model.build()
     ps.reset_selection()  # the selection points at structures we're about to replace
     ps.remove_all_structures()
+    _render_axes()
     for step in model.steps:
         RENDERERS.get(step.render_kind, _render_nothing)(step, context)
     if overlay is not None:

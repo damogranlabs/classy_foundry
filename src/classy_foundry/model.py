@@ -11,6 +11,8 @@ import pickle
 
 import classy_blocks as cb
 
+from .steps.base import expr_import_line
+
 
 class Model:
     def __init__(self):
@@ -115,7 +117,7 @@ class Model:
         self.build_mesh().write(path)
 
     def to_script(self, blockmesh_path="system/blockMeshDict"):
-        lines = ["import classy_blocks as cb", "", "mesh = cb.Mesh()", ""]
+        lines = ["import classy_blocks as cb", expr_import_line(), "", "mesh = cb.Mesh()", ""]
         for step in self.steps:
             lines += step.to_lines()
             if step.adds_to_mesh:
