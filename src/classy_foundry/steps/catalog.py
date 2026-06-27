@@ -13,7 +13,16 @@ from .face import Face
 from .graders import FixedCount, Inflation, Simple
 from .loft import Loft
 from .mapped_sketch import MappedSketch
-from .point import Point
+from .optimize import (
+    CurveClamp,
+    FreeClamp,
+    LineClamp,
+    Optimize,
+    PlaneClamp,
+    RadialClamp,
+    SketchOptimizer,
+)
+from .point import OnCurvePoint, Point
 from .revolve import Revolve
 from .shapes import (
     Cylinder,
@@ -35,6 +44,7 @@ CATALOG = [
     # References
     Point,
     PointsFileCurve,
+    OnCurvePoint,
     # Flat
     Face,
     MappedSketch,
@@ -63,6 +73,16 @@ CATALOG = [
     EighthSphere,
     QuarterSphere,
     HalfSphere,
+    # Optimizers
+    SketchOptimizer,
+    # Optimizers / Clamps
+    FreeClamp,
+    LineClamp,
+    PlaneClamp,
+    RadialClamp,
+    CurveClamp,
+    # Optimizers (run)
+    Optimize,
     # Grading
     Chop,
     # Grading / Automatic

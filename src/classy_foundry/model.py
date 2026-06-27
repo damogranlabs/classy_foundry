@@ -11,7 +11,7 @@ import pickle
 
 import classy_blocks as cb
 
-from .steps.base import expr_import_line
+from .steps.base import BuildContext, expr_import_line
 
 
 class Model:
@@ -89,14 +89,28 @@ class Model:
 
     # ---- build / codegen / io ----
 
-    def build(self):
-        """Best-effort build of every step → context {step: cb_value}.
+    def prefix(self, upto=None):
+        """The steps to build/show: up to *and including* `upto`, or all of them.
+
+        `upto` is a **step** (the rollback marker), not an index, so it stays valid under
+        reorder/delete; `None` — or a stale/deleted marker — means the whole list (the
+        natural "show everything" default).
+        """
+        if upto in self.steps:
+            return self.steps[: self.steps.index(upto) + 1]
+        return self.steps
+
+    def build(self, upto=None, optimize=False):
+        """Best-effort build of the step prefix → context {step: cb_value}.
 
         Unbuildable steps (in-progress sketches, unsatisfied references) are skipped so a
-        partial model still displays — the same leniency the live editor needs.
+        partial model still displays — the same leniency the live editor needs. `upto` bounds
+        the build to the rollback marker's prefix (see `prefix`); the default builds all.
+        `optimize` gates the expensive optimizer pass (off for the live viewport, on for
+        write/export and the Run button); it rides on the context (see `BuildContext`).
         """
-        context: dict = {}
-        for step in self.steps:
+        context = BuildContext(optimize)
+        for step in self.prefix(upto):
             try:
                 step.build(context)
             except Exception:
@@ -104,7 +118,7 @@ class Model:
         return context
 
     def build_mesh(self):
-        context = self.build()
+        context = self.build(optimize=True)  # the real output must be optimized
         mesh = cb.Mesh()
         for step in self.steps:
             if step.adds_to_mesh and step in context:

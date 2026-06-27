@@ -203,26 +203,29 @@ Each base implements `build()` + `to_lines()` **once**, parameterised by a class
 | `ProducingStep` *(exists)* | `name = cb.Cls(args…)` (args may be `ref`s/points) | `cb_name` | Face, MappedSketch, all Sketch-catalogue, Box/Extrude/Rotate/Loft/Wedge, all Shapes & Stacks, all Solid-catalogue |
 | `ValueStep` *(exists)* | `name = <literal>` (single field is the output) | — | Single point |
 | `ConfiguringStep` *(exists)* | `<ref>.method(args…)` (in-place; output = target) | `cb_method` | Translate, Rotate, Scale, Project, Set patch, Grade axis (chop), Grade edge |
-| `DerivedStep` | `name = <ref>.method(args…)` (new value from an ancestor) | `cb_method` | copy, Extract face |
-| `HelperStep` *(exists)* | `name = cb.Cls(target, args…)` then `name.<call>()` (helper object + finishing call) | `cb_name`, `cb_call` | auto-graders *(done)*, mesh/sketch/shape optimizers & smoothers |
+| `DerivedStep` *(exists)* | `name = <ref>.method(args…)` (new value from an ancestor) | `cb_method` | **Point on curve** *(done)*, copy, Extract face |
+| `HelperStep` *(exists)* | `name = cb.Cls(target, args…)` then `name.<call>()` (helper object + finishing call) | `cb_name`, `cb_call` | auto-graders *(done)*, mesh/sketch/shape **smoothers** (optimizers split into producing + clamp/optimize steps — see **Optimization**) |
 
 **`HelperStep` — the "helper object + call" family (decided).** classy_blocks' graders,
 optimizers, and smoothers all share one shape: *wrap a target in a helper, then call a
 finishing method* (`cb.FixedCountGrader(mesh).grade()`, `cb.SketchSmoother(s).smooth()`,
 `cb.SketchOptimizer(s)…optimize()`). So they share **one** base, `HelperStep`, parameterised
-by `cb_name` (helper class) + `cb_call` (the finishing method). The earlier `OptimizerStep`
-sketch is subsumed by it. Two orthogonal axes inside the family, each added with its first
-member (YAGNI):
+by `cb_name` (helper class) + `cb_call` (the finishing method). (Optimizers are the one
+exception — clamps land *between* construction and `optimize()`, so they decompose into
+separate steps rather than a single helper-and-call; see the **Extra body** note below.)
+Two orthogonal axes inside the family, each added with its first member (YAGNI):
 
 - **Target = mesh vs element.** Mesh-targeted helpers (auto-graders, `MeshOptimizer`) act on
   the whole assembled mesh, so they run in the `apply_to_mesh` hook (a base **no-op**,
   overridden here), once per step *after* every `mesh.add` (`model.build_mesh`), and draw
   nothing. Element-targeted helpers (`Sketch`/`ShapeOptimizer`/`Smoother`) take a `ref`
   target and run in the normal build pass — *added when the first optimizer lands*.
-- **Extra body.** Graders/smoothers are a bare `helper; call()`. Optimizers additionally
-  drive constraints (`add_clamp`), which is the optimizer's real design — deferred, and
-  shaped around classy_blocks' upcoming **smart points / `AutoOptimizer`** (see
-  **Optimization & smoothing**). It *extends* `HelperStep`.
+- **Extra body → separate steps (revised).** Graders/smoothers are a bare `helper; call()`,
+  so they fit `HelperStep` directly. Optimizers do **not**: `add_clamp` calls and the final
+  `optimize()` are *separate steps* (an optimizer **producing** step, per-kind **clamp**
+  configuring steps, an **optimize** configuring step). Smart points were rejected (see
+  **Optimization & smoothing → Clamps are explicit steps**), so there is no `AutoOptimizer`
+  and nothing extends `HelperStep` here.
 
 **Manual chop is not in this family.** `op.chop(axis, count)` is a method on the target
 in place — `ConfiguringStep`, no helper object. It stays there, unchanged.
@@ -272,7 +275,7 @@ string), so the one-way `view → model` rule holds.
 
 Each base is added **when its first member is implemented** (YAGNI): `ProducingStep`,
 `ValueStep`, `ConfiguringStep`, and `HelperStep` (its first members are the auto-graders)
-exist; `DerivedStep` arrives with its first type, and `HelperStep`'s element-targeted /
+exist; `DerivedStep` now exists too (first member: `OnCurvePoint`), and `HelperStep`'s element-targeted /
 clamp-carrying branches with the first optimizer. This hierarchy is the plan the
 incremental work follows.
 
@@ -420,12 +423,52 @@ reflow on resize; point entries stack (combo + dropper on one line, xyz filling 
 below) to never overflow a narrow window. Point clouds render with an enlarged
 `set_radius` (`POINT_RADIUS`, relative) — Polyscope's default sphere is tiny.
 
+### Rollback marker — build up to the editing step (decided)
+
+Borrowed wholesale from parametric CAD's feature-tree rollback bar. The viewport shows
+geometry built **only up to the currently-marked step**; everything after the marker is not
+built and not drawn. One mechanism that pays for many:
+
+- **Undo / reset / snapshot dissolve.** "Undo the optimization" = put the marker before the
+  optimize step; the un-optimized state rebuilds from the untouched upstream definition. No
+  snapshot stack, no reset button, no stale-tracking.
+- **Clutter and scope.** Downstream geometry can't be needed by upstream work (the reference
+  DAG only points backward), so hiding it loses nothing relevant and de-clutters the viewport
+  and picking.
+- **In-place mutation is harmless.** Each render re-executes the step prefix fresh, so a step
+  that mutates in place (an optimizer) only ever touches the freshly-built copy of *this*
+  render — the prefix rebuild *is* the working copy.
+- **"Show everything" is just the marker fully advanced** — the normal full-model view is the
+  special case, not a separate mode.
+
+The marker sits on **any** step uniformly — "a step is a step", no per-type behaviour.
+
+**Two cursors, kept separate.** `session["active"]` (which step's panel is open / highlighted)
+and the marker (how far the model builds) are independent. A bare viewport **selection must
+not move the marker** — clicking around to inspect must never silently rebuild/re-optimize.
+The marker moves only on two deliberate gestures: clicking its **per-row toggle** (`(o)`/`( )`,
+click the current marker again to clear → show-all), or pressing a step's **Edit** button
+(which rolls the marker to that step so you edit in-context, downstream suspended, exactly like
+CAD). So `sync_selection` stays a pure highlighter; coupling is one-directional (Edit/toggle →
+marker; never selection → marker).
+
+This changes the rebuild cadence (**Resolved/proven**): `sync_display` builds the **prefix up
+to the marker**, not the whole list.
+
 ### Interaction primitives (all on Polyscope picking + ImGui, no scene-graph code)
 
 - **Sketcher** (a sketch step) — *implemented*. Click places a point via
-  `screen_coords_to_world_ray` ∩ work plane; nearest-point proximity snap connects quad
-  corners; ImGui tables edit points/quads. ~170 lines, no Coin3D equivalent. The proof
+  `screen_coords_to_world_ray` ∩ work plane; quad corners are selected by `ps.pick` world
+  position (depth-correct, so off-plane on-curve points select correctly — *not* work-plane
+  proximity); ImGui tables edit points/quads. ~170 lines, no Coin3D equivalent. The proof
   the platform handles the hard, spatial part.
+  - **Reference-point reuse** *(implemented)* — in point mode a click that lands on a
+    reference point (`PointStep` — Single point / on-curve) **snapshots its exact position**
+    into the sketch (pick-based, via `ps.pick` → step → built value); a click that misses
+    drops a free point on the work plane. Snapshot, *not* a live ref: the sketch stays a
+    plain position list so it transforms rigidly — the curve binding lives in the clamp, not
+    the sketch (the resolution of the transform problem). This is what lets a sketch vertex
+    sit exactly on an on-curve point so the optimizer can clamp it.
 - **Selection (viewport → list)** — *implemented*. A bare viewport click selects the
   structure; we mirror `ps.get_selection()` into `session["active"]` each frame
   (`structure_name → model.step_by_name`, `::`-suffix stripped for sketch substructures),
@@ -458,6 +501,15 @@ below) to never overflow a narrow window. Point clouds render with an enlarged
   (Extruded/Revolved/Lofted) sweeps a **sketch** the same way.
 - **Grade / tag / project** *(Grade axis done as a step)* — the spatial form is: pick a
   face → named side via `get_face` → chop / patch / projection. Same picking foundation.
+- **Drag-reorder** *(implemented)* — a per-row `::` grab handle replaces the up/down buttons;
+  holding it and dragging drives `model.move(step, ±1)` one swap per row-pitch crossed (the
+  classic ImGui swap-on-cross idiom: `IsItemActive` + `GetMouseDragDelta`). A move blocked by
+  the no-forward-reference guard simply doesn't reset the delta, so the drag *sticks* at the
+  dependency wall — the guard rendered as **felt resistance**, no extra code.
+- **Rollback marker** *(implemented)* — a per-row click toggle `(o)`/`( )` sets/clears
+  `session["marker"]` (a *step*, not an index); the viewport builds the prefix up to it
+  (`model.prefix` / `sync_display(upto=…)`), rows past it greyed. Click, not drag — the
+  affordance is simpler and sufficient (no `InvisibleButton`/draw-list handle needed).
 
 ---
 
@@ -481,7 +533,7 @@ real output.
 | `SetPatch` (tag) | `set_patch(side, name)` | *deferred* — pick face(s) → name; `set_default_patch` not required to write |
 | `Project` | `project_*(geometry)` | *deferred* — pick edge/face → pick target surface/curve |
 | `Transform` | translate/rotate/scale | *UI not yet settled* (deferred) |
-| Smooth / Optimize | Sketch/Shape/Mesh smoothers & optimizers | `HelperStep`s; smoothers next, optimizers wait on cb smart points (see **Optimization & smoothing**) |
+| Smooth / Optimize | Sketch/Shape/Mesh smoothers & optimizers | smoothers are `HelperStep`s; optimizers decompose into producing + per-kind **clamp steps** + optimize, on cb's existing clamp API (see **Optimization & smoothing**) |
 | Write | assemble/grade/write | *implemented* — Write blockMeshDict button (no default patch needed) |
 
 **Grading model (decided).** classy_blocks shapes *can* be chopped per-axis, but that means
@@ -498,10 +550,12 @@ UI are deferred — all ride the proven `pick` foundation, so deferral costs no 
 
 ---
 
-## Optimization & smoothing (planned)
+## Optimization & smoothing
 
-Both are `HelperStep`s (`helper = cb.Cls(target); helper.<call>()`), but they split
-sharply by cost, and the optimizer's design hinges on a classy_blocks change landing first.
+Both split sharply by cost. **Optimizers are implemented** (the producing + clamp + optimize
+steps below — `SketchOptimizer` only so far; Shape/Mesh deferred), built on cb's existing
+clamp API after smart points were rejected (see **Clamps are explicit steps**). **Smoothers
+are still planned** — they're plain `HelperStep`s (`helper = cb.Cls(target); helper.<call>()`).
 
 ### Smoothers — cheap, inline (build next)
 
@@ -516,7 +570,7 @@ sharply by cost, and the optimizer's design hinges on a classy_blocks change lan
 
 These are the warm-up that proves the element-target branch; no button, no special-casing.
 
-### Optimizers — expensive, decoupled from the live rebuild
+### Optimizers — expensive, decoupled from the live rebuild *(implemented)*
 
 An optimizer can take a while, and it **mutates its target mid-pipeline** (a sketch/shape
 the downstream sweep depends on). Running it inside the every-dirty-edit rebuild would
@@ -532,40 +586,62 @@ since mutation is in place); a mesh optimizer runs in `apply_to_mesh` like a gra
 **Codegen always emits `optimize()`** — never baked coordinates; the exported script
 recomputes faithfully, and only the GUI preview skips it.
 
+**In-place mutation is contained by the rebuild; undo is the marker.** Every rebuild
+reconstructs the prefix from source (the optimize step mutates a freshly-built target, never
+a persisted one), so re-running never compounds and pressing Run twice is idempotent. And
+"undo the optimization" needs no snapshot: it is just moving the **rollback marker** (see
+**Authoring model → Rollback marker**) before the optimize step — the upstream definition was
+never touched, so the un-optimized state simply rebuilds.
+
 **Postponed for v1 (decided):** result **caching** (after Run, the optimized preview shows
 until the next dirty edit, then reverts — the real geometry still comes out at write) and a
 shared **output/console window** for the optimizer report. Both deferred; the console will
 later serve write/build errors too.
 
-### Clamps → classy_blocks "smart points" (the optimizer waits on this)
+### Clamps are explicit steps — no smart points (decided, reversed)
 
 A clamp pins a mesh vertex and says how it may move (free / on-line / on-plane / on-circle /
-on-curve / fixed). classy_blocks' native flow states the same `(curve, param)` binding
-**three times** — `get_point(t)` for the position, the remembered `param`, and a
-`CurveClamp(position, curve, param)` matched back to the vertex *by coordinate within `TOL`*
-(`grid.py`). The optimizer grid is deliberately **coordinate-addressed** (junctions are bare
-indices, no link back to the construct point), so that redundancy is the seam of a real
-layer decoupling — not sloppiness.
+on-curve / fixed). classy_blocks' optimizer grid is deliberately **coordinate-addressed**: a
+`CurveClamp(position, curve, param)` is matched back to its vertex *by coordinate within
+`TOL`* (`grid.py`), junctions are bare indices with no link to a construct point. **That
+coordinate-addressing is the whole mechanism we lean on** — a clicked point's position *is*
+its identity; nothing more is needed to name the vertex a clamp acts on.
 
-The maintainer is adding **smart points** to classy_blocks: a point carries its own
-constraint (*where* it belongs + *whether* it can move — kept orthogonal, so a constrained
-point can be frozen without losing its binding), and an **`AutoOptimizer`** reads those and
-adds the clamps itself. That collapses the triple-spec to one source.
+**Smart points were explored and rejected.** The earlier plan had classy_blocks grow *smart
+points* (a point carrying its own constraint) + an `AutoOptimizer` that reads them. Pursuing
+it meant pulling surfaces / `trimesh` into the geometry primitives and overhauling cb's point
+types to solve what is a **GUI** problem — solving one problem by creating three. The
+blinking-red-light test failed, so **classy_blocks is left untouched** and the feature is
+built entirely on the foundry side, against cb's existing coordinate-addressed clamp API.
 
-This **reshapes our optimizer step**, so we build it *after* smart points exist in cb:
+**Constraints are steps; points stay plain.** A point placed on a curve uses the curve only
+as construction geometry for placement; it does not carry a live constraint. *Movement during
+optimization is decided entirely by clamp steps*, and the default is that every vertex is
+**fixed** (no clamp). "Releasing" a vertex = adding a clamp step. So three step kinds, all in
+the existing taxonomy — no new machinery (**all implemented** in `steps/optimize.py`):
 
-- A point's constraint is set **when placing it** — an on-curve point source `(curve ref,
-  param)` resolving to `curve.get_point(param)` (and later on-surface `(surface ref, u, v)`),
-  sitting alongside the existing literal / `Point`-ref point sources. The location is stated
-  once; "fixed vs free" is the only optimization choice.
-- The optimizer step then collapses to roughly `AutoOptimizer(target).optimize()` + options;
-  the embedded clamp editor we sketched **largely dissolves**, needed only for residual
-  manual constraints on vertices that aren't smart points.
+- **Optimizer step** (`OptimizerStep` / `SketchOptimizer`) — produces `cb.SketchOptimizer(target)`
+  (a target `ref`); `render_kind=None` (the target it optimizes already shows). Its output is
+  the optimizer object later steps reference. `Shape`/`Mesh` variants deferred.
+- **Clamp steps** (`ClampStep` + one subclass per kind: Free/Line/Plane/Radial/Curve) — each a
+  `ConfiguringStep` on the optimizer: `optimizer.add_clamp(cb.CurveClamp(position, curve, …))`.
+  One step type per clamp class, so dispatch is the step framework's job — no `if`-ladder. A
+  clamp step references `(optimizer, point, geometry)`; the **point is a `point` input named by
+  the existing dropper** (`handle_pick` fills it from a clicked structure, accept-checked via
+  `candidates`) — the "pick-snap" we'd sketched already exists, so clamp authoring adds *no*
+  picking code. Codegen resolves the point ref to its position, which cb matches to the vertex
+  by coordinate.
+- **Optimize step** (`Optimize`) — `optimizer.optimize(max_iterations=…)`; the expensive call
+  (see below), gated by the `build(optimize=…)` flag and a **Run** button (`_optimize_editor`
+  → `session["run_optimize"]` → one-shot `build(optimize=True)`). `max_iterations` is a plain
+  schema field — fast-but-rough during authoring, raised before export.
 
-So the build order is: **smoothers now**; the optimizer step once cb ships smart points +
-`AutoOptimizer`, targeting that clean API directly rather than a clamp editor we'd then gut.
-(The on-surface case additionally waits on cb surface support — `ParametricSurfaceClamp` is
-function-based — and STL surfaces, both deferred.)
+Default-fixed means coincident/degenerate points need no guarding: cb's optimizer already
+refuses degenerate cells and the user sees the problem in the viewport — validation lives in
+perception + the downstream, not in defensive code.
+
+(The on-surface clamp case still waits on cb surface support — `ParametricSurfaceClamp` is
+function-based — and STL surfaces, both deferred. On-line/on-plane/on-curve need nothing new.)
 
 ---
 
@@ -634,17 +710,25 @@ separation mechanically:
 **Next:**
 
 1. **Stacks** — `Extruded/Revolved/Lofted stack` (the remaining shape family).
-2. **Extract face** — first `DerivedStep` (`name = op.get_face(side)`); pick the op + side.
+2. **Extract face** — another `DerivedStep` (`name = op.get_face(side)`); pick the op + side.
+   (`DerivedStep` now exists — first member was `OnCurvePoint`.)
 3. **Smoothers** — `MeshSmoother` (mesh-targeted, like a grader) + `SketchSmoother` (first
    element-targeted `HelperStep`). Cheap, run inline, no clamps. See **Optimization &
    smoothing**.
-4. **Optimizers** — *blocked on classy_blocks* smart points + `AutoOptimizer`; built against
-   that clean API once it lands (the Run button + `build(optimize=…)` flow). See
-   **Optimization & smoothing**.
-5. **Edges / projections** — to discuss; the Points-file curve is the foundation (edges on
+4. **Rollback marker + drag-reorder** *(implemented; live drag-feel pending eyes)* —
+   `sync_display`/`model.build`/`model.prefix` build the **prefix up to the marker** (a step
+   ref, `None`=all); per-row `(o)` marker toggle + `::` drag-reorder replace the up/down
+   buttons; the **Edit** button rolls the marker to its step. Two cursors (`active` vs marker)
+   kept separate. See **Authoring model → Rollback marker**.
+5. **Optimizers** *(implemented — `SketchOptimizer` only; Shape/Mesh deferred)* — built on
+   cb's existing coordinate-addressed clamp API (smart points rejected). `OptimizerStep` +
+   per-kind **clamp steps** (Free/Line/Plane/Radial/Curve; point named via the existing
+   dropper) + an `Optimize` step (Run button, `max_iterations` field, `build(optimize=…)`).
+   See **Optimization & smoothing → Clamps are explicit steps**.
+6. **Edges / projections** — to discuss; the Points-file curve is the foundation (edges on
    faces, projection targets).
-6. **Patches / projection / transforms** — as their bases land.
-7. **List → viewport highlight** — the reverse of selection (needs our own highlight,
+7. **Patches / projection / transforms** — as their bases land.
+8. **List → viewport highlight** — the reverse of selection (needs our own highlight,
    since Polyscope has no `set_selection`).
 
 **Deferred (decided):** palette categorization polish, the transform UI (gizmo vs
@@ -659,6 +743,7 @@ export to add).
 
 - References
   - ✓ Single point (fixed)
+  - ✓ Point on curve (a curve + parameter → `curve.get_point(param)`; referenceable like any point)
   - ✓ Points file (a list of 3d points → `LinearInterpolatedCurve`)
   - Surface (path to an STL surface)
 - Flat

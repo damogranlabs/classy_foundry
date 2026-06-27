@@ -12,14 +12,14 @@ ends pick mode either way.
 import polyscope as ps
 import polyscope.imgui as psim
 
-from ..steps.point import Point
+from ..steps.point import PointStep
 
 LEFT_MOUSE = 0
 
 
 def _accepts(step, field):
     spec = step.SCHEMA[field]
-    return Point if spec["kind"] in ("point", "point_list") else spec.get("accepts")
+    return PointStep if spec["kind"] in ("point", "point_list") else spec.get("accepts")
 
 
 def handle_pick(model, session):

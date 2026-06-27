@@ -120,13 +120,15 @@ def _render_axes():
                                   enabled=True, color=colour)
 
 
-def sync_display(model, overlay=None):
-    """Rebuild the whole viewport from the model, then let an overlay re-add itself."""
-    context = model.build()
+def sync_display(model, overlay=None, upto=None, optimize=False):
+    """Rebuild the viewport from the model prefix up to the rollback marker `upto`
+    (a step; None = the whole list), then let an overlay re-add itself. `optimize` runs the
+    (expensive) optimizer pass — set only for a one-shot Run, off for the live rebuild."""
+    context = model.build(upto, optimize=optimize)
     ps.reset_selection()  # the selection points at structures we're about to replace
     ps.remove_all_structures()
     _render_axes()
-    for step in model.steps:
+    for step in model.prefix(upto):
         RENDERERS.get(step.render_kind, _render_nothing)(step, context)
     if overlay is not None:
         overlay()

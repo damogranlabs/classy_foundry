@@ -36,11 +36,13 @@ def main():
         if session.get("pick") is not None:
             changed |= handle_pick(model, session)  # ref-pick mode
         elif active is sketch_editor.sketch and sketch_editor.mode is not None:
-            changed |= sketch_editor.handle_click()  # sketch placement mode
+            changed |= sketch_editor.handle_click(model)  # sketch placement mode
         else:
             sync_selection(model, session)  # idle: viewport -> list
-        if changed or dirty["flag"]:
-            sync_display(model, overlay=sketch_editor.render_overlay)
+        optimize = session.pop("run_optimize", False)  # one-shot Run; reverts on next rebuild
+        if changed or dirty["flag"] or optimize:
+            sync_display(model, overlay=sketch_editor.render_overlay,
+                         upto=session.get("marker"), optimize=optimize)
             dirty["flag"] = False
 
     ps.set_user_callback(callback)

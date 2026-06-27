@@ -7,7 +7,8 @@ import polyscope.imgui as psim
 
 from ..steps.catalog import CATALOG
 from ..steps.mapped_sketch import MappedSketch
-from ..steps.point import Point
+from ..steps.optimize import Optimize
+from ..steps.point import PointStep
 from .widgets import edit_field
 
 MODEL_PATH = "model.pkl"
@@ -80,7 +81,7 @@ def _point_entry(step, field, index, entry, candidates, session):
     psim.PushID(f"{field}:{index}")
     changed = False
     new = entry
-    is_ref = isinstance(entry, Point)
+    is_ref = isinstance(entry, PointStep)
     if index is not None:
         psim.TextUnformatted(f"{index}")
         psim.SameLine()
@@ -94,7 +95,7 @@ def _point_entry(step, field, index, entry, candidates, session):
         psim.EndCombo()
     psim.SameLine()
     _dropper(session, (step, field, index))
-    if not isinstance(new, Point):
+    if not isinstance(new, PointStep):
         psim.SetNextItemWidth(-1)
         row_changed, xyz = psim.InputFloat3("##xyz", new)
         if row_changed:
@@ -104,7 +105,7 @@ def _point_entry(step, field, index, entry, candidates, session):
 
 
 def _point_field(step, field, spec, model, session):
-    candidates = model.candidates(step, Point)
+    candidates = model.candidates(step, PointStep)
     psim.TextUnformatted(spec["label"])
     if spec["kind"] == "point":
         changed, new = _point_entry(step, field, None, step.values[field], candidates, session)
@@ -149,17 +150,61 @@ def _sketch_editor(step, sketch_editor, model, session):
     return sketch_editor.draw()
 
 
-EDITORS = {MappedSketch: _sketch_editor}
+def _optimize_editor(step, sketch_editor, model, session):
+    """The generic field editor plus a Run button: optimization is expensive and skipped on
+    the live rebuild, so Run requests one `optimize`-mode rebuild on demand (see __main__)."""
+    dirty = _generic_editor(step, sketch_editor, model, session)
+    if psim.Button("Run"):
+        session["run_optimize"] = True
+        dirty = True
+    return dirty
 
 
-def _draw_step_row(step, model, session):
+EDITORS = {MappedSketch: _sketch_editor, Optimize: _optimize_editor}
+
+
+def _marker_button(step, session):
+    """Rollback-marker toggle for a row: build the viewport up to *this* step; click the
+    current marker again to clear it back to show-all. Sets only `session['marker']`, never
+    `active` — the two cursors stay independent (see DESIGN: Rollback marker)."""
+    is_marker = session.get("marker") is step
+    clicked = psim.SmallButton("(o)##mark" if is_marker else "( )##mark")
+    if psim.IsItemHovered():
+        psim.SetTooltip("rollback marker — build up to here")
+    if clicked:
+        session["marker"] = None if is_marker else step
+    return clicked
+
+
+def _drag_handle(step, model):
+    """Grab handle: hold and drag up/down to reorder, one swap per row-pitch crossed
+    (the classic ImGui swap-on-cross idiom over `model.move`). A move blocked by the
+    no-forward-reference guard simply doesn't reset the delta, so the drag *sticks* at the
+    dependency wall — the guard rendered as felt resistance. Returns True if the list moved."""
+    psim.SmallButton("::##drag")
+    if psim.IsItemHovered():
+        psim.SetTooltip("drag to reorder")
+    if not psim.IsItemActive():
+        return False
+    dy = psim.GetMouseDragDelta(0)[1]
+    pitch = psim.GetFrameHeightWithSpacing()
+    if dy >= pitch and model.move(step, +1):
+        psim.ResetMouseDragDelta()
+        return True
+    if dy <= -pitch and model.move(step, -1):
+        psim.ResetMouseDragDelta()
+        return True
+    return False
+
+
+def _draw_step_row(step, model, session, suspended):
     dirty = False
     psim.PushID(str(id(step)))
-    if psim.SmallButton("^"):
-        dirty |= model.move(step, -1)
+    dirty |= _marker_button(step, session)  # bright even when suspended — it's the control
     psim.SameLine()
-    if psim.SmallButton("v"):
-        dirty |= model.move(step, +1)
+    if suspended:  # rows after the marker aren't built; grey them to show it
+        psim.PushStyleColor(psim.ImGuiCol_Text, (0.5, 0.5, 0.5, 1.0))
+    dirty |= _drag_handle(step, model)
     psim.SameLine()
     psim.SetNextItemWidth(110)
     changed, new = psim.InputText("##name", step.name, max_str_len=64)
@@ -167,12 +212,21 @@ def _draw_step_row(step, model, session):
         model.rename(step, new)
     psim.SameLine()
     if psim.Selectable(type(step).__name__, session["active"] is step, size=(80, 0)):
+        session["active"] = step  # casual highlight — active only, marker untouched
+    psim.SameLine()
+    if psim.SmallButton("edit"):  # deliberate: edit in context — roll the marker here too
         session["active"] = step
+        session["marker"] = step
+        dirty = True
     psim.SameLine()
     if psim.SmallButton("x") and model.remove(step):
         if session["active"] is step:
             session["active"] = None
+        if session.get("marker") is step:
+            session["marker"] = None  # don't leave the marker pointing at a deleted step
         dirty = True
+    if suspended:
+        psim.PopStyleColor()
     psim.PopID()
     return dirty
 
@@ -186,14 +240,16 @@ def _draw_palette(model, session):
         psim.EndPopup()
     if chosen is None:
         return False
+    session["marker"] = None  # show the full model so the newly added step is visible
     session["active"] = model.add(chosen())
     return True
 
 
 def _draw_steps(model, sketch_editor, session):
     dirty = False
+    live = model.prefix(session.get("marker"))  # rows past the marker render greyed
     for step in list(model.steps):
-        dirty |= _draw_step_row(step, model, session)
+        dirty |= _draw_step_row(step, model, session, step not in live)
     dirty |= _draw_palette(model, session)
     active = session["active"]
     if active is not None and active in model.steps:

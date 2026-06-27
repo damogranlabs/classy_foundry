@@ -79,6 +79,19 @@ CODEGEN = {
 }
 
 
+class BuildContext(dict):
+    """The `{step: cb_value}` map a replay fills, plus the `optimize` flag that gates the
+    expensive optimizer pass. It behaves like the plain dict every `build()` already uses
+    (identity-keyed by step); the flag rides alongside so the one step that cares — the
+    optimize step — reads `context.optimize` instead of threading a parameter through every
+    `build()`. False for the live viewport (optimizers construct but skip `optimize()`),
+    True for write/export."""
+
+    def __init__(self, optimize: bool = False):
+        super().__init__()
+        self.optimize = optimize
+
+
 class Step:
     cb_name: str = ""
     default_name: str = "step"
@@ -208,6 +221,30 @@ class ConfiguringStep(Step):
         )
         name = target.name if target is not None else "None"
         return [f"{name}.{self.cb_method}({kwargs})"]
+
+
+class DerivedStep(ConfiguringStep):
+    """Like `ConfiguringStep` but the method *returns a new value* bound to this step's name:
+    `name = <ref>.method(kwargs…)` (a point on a curve, an extracted face, …). The target is
+    left unchanged; the output is the returned value. Reuses ConfiguringStep's ref/kwargs
+    plumbing (`_target`, `_kwargs_fields`), overriding only build (assigns the result) and
+    codegen (assigns to `name`)."""
+
+    def build(self, context):
+        target = context[self._target()]
+        kwargs = {
+            f: resolve_value(self.values[f], spec, context) for f, spec in self._kwargs_fields()
+        }
+        context[self] = getattr(target, self.cb_method)(**kwargs)
+        return context[self]
+
+    def to_lines(self):
+        target = self._target()
+        kwargs = ", ".join(
+            f"{f}={CODEGEN[spec['kind']](self.values[f])}" for f, spec in self._kwargs_fields()
+        )
+        name = target.name if target is not None else "None"
+        return [f"{self.name} = {name}.{self.cb_method}({kwargs})"]
 
 
 class ValueStep(Step):

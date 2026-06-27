@@ -1,10 +1,13 @@
 """MappedSketch sketcher: viewport click-to-place/snap + points/quads tables.
 
-The interaction rests on screen_coords_to_world_ray + camera position (place a click on
-the work plane) and ImGui tables -- no scene-graph code. Snapping to existing points is
-proximity-based (nearest point within a zoom-stable radius), not pick-based: a click
-need only land *near* a point, and the snap is unaffected by the overlay marker clouds
-that sit on top of real points.
+The interaction rests on screen_coords_to_world_ray + camera position (drop a free point on
+the work plane), ps.pick (resolve an existing vertex by its world position), and ImGui
+tables -- no scene-graph code. Quad corners are picked by *world position* (depth-correct, so
+off-plane on-curve points select correctly and overlay markers resolve to their vertex), not
+by work-plane proximity. Placing a point is pick-based for reuse: a click on a reference
+point (`PointStep`) snapshots that point's exact position into the sketch (the sketch keeps
+plain positions, so it transforms rigidly — the curve binding lives in the clamp, not here);
+a click that misses every reference point drops a free point on the work plane.
 """
 
 import numpy as np
@@ -12,6 +15,7 @@ import polyscope as ps
 import polyscope.imgui as psim
 
 from ..geom import ray_plane_hit
+from ..steps.point import PointStep
 
 LEFT_MOUSE = 0
 
@@ -30,21 +34,44 @@ class SketchEditor:
 
     # ---------- viewport interaction ----------
 
-    def handle_click(self):
+    def handle_click(self, model):
         """Process a left click in the viewport; return True if anything changed.
 
-        Point mode adds a point at the click; quad mode connects the *nearest existing
-        point* (no new points), so quads are built by clicking roughly at corners.
+        Point mode adds a point — snapshotting an existing reference point if the click
+        landed on one, else a free point on the work plane; quad mode connects the *nearest
+        existing point* (no new points), so quads are built by clicking roughly at corners.
         """
         if not self._armed():
             return False
-        hit = self._plane_hit(psim.GetMousePos())
+        screen = psim.GetMousePos()
+        if self.mode == "point":
+            return self._place_point(screen, model)
+        return self._extend_quad(screen)
+
+    def _place_point(self, screen, model):
+        """Add a point: snapshot a reference point if the click hit one, else drop a free
+        point on the work plane. (Snapshot, not a live ref — the sketch stays a plain
+        position list so transforms stay rigid; the curve binding lives in the clamp.)"""
+        ref = self._picked_reference_position(screen, model)
+        if ref is not None:
+            self._append(ref)
+            return True
+        hit = self._plane_hit(screen)
         if hit is None:
             return False
-        if self.mode == "point":
-            self._append(hit)
-            return True
-        index = self._closest(hit)
+        self._append(list(hit))
+        return True
+
+    def _extend_quad(self, screen):
+        """Add the clicked sketch vertex to the in-progress quad. Resolved by the pick's
+        *world position* (depth-correct), not the work-plane intersection — so an off-plane
+        on-curve point selects correctly instead of its plane-parallax neighbour, and an
+        overlay marker (which sits exactly on its point) resolves to the right vertex. A
+        click that hits nothing is ignored (no accidental neighbour)."""
+        result = ps.pick(screen_coords=screen)
+        if not result.is_hit:
+            return False
+        index = self._closest(np.asarray(result.position, float))
         if index is None:
             return False  # no existing points to connect
         self.pending.append(index)
@@ -52,6 +79,19 @@ class SketchEditor:
             self.sketch.quads.append(list(self.pending))
             self.pending = []
         return True
+
+    def _picked_reference_position(self, screen, model):
+        """Exact world position of a reference point (`PointStep`) under the click, or None
+        if the click missed every reference point. Resolves the picked step's built value, so
+        an on-curve point snaps to its precise `curve.get_point(param)`."""
+        result = ps.pick(screen_coords=screen)
+        if not result.is_hit:
+            return None
+        step = model.step_by_name(result.structure_name.split("::")[0])
+        if not isinstance(step, PointStep):
+            return None
+        value = model.build().get(step)
+        return None if value is None else list(np.asarray(value, float).ravel())
 
     def _armed(self):
         return (self.sketch is not None and self.mode is not None
