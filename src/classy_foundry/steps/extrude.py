@@ -1,7 +1,7 @@
 """'Extrude' step — a recipe for classy_blocks' Extrude (a Face swept into a solid)."""
 
 from .base import ProducingStep
-from .face import Face
+from .face import FaceStep
 
 
 class Extrude(ProducingStep):
@@ -12,6 +12,6 @@ class Extrude(ProducingStep):
     label = "Extrude"
     render_kind = "operation"
     SCHEMA = {
-        "base": {"kind": "ref", "label": "Profile", "default": None, "accepts": Face},
+        "base": {"kind": "ref", "label": "Profile", "default": None, "accepts": FaceStep},
         "amount": {"kind": "float", "label": "Distance", "default": "1.0"},
     }

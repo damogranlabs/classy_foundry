@@ -17,6 +17,7 @@ WIDGETS = {
     "float": lambda spec, value: psim.InputText("##v", str(value)),
     "int": lambda spec, value: psim.InputText("##v", str(value)),
     "points_file": lambda spec, value: psim.InputText("##v", str(value)),  # path to a points file
+    "text": lambda spec, value: psim.InputText("##v", str(value), max_str_len=256),  # name / path
     "choice": lambda spec, value: _combo(spec, value),
 }
 

@@ -12,7 +12,8 @@ markers) re-add itself.
 import numpy as np
 import polyscope as ps
 
-SIDES = ("bottom", "top", "left", "right", "front", "back")
+from ..steps.faces import SIDES, operations_of  # canonical side order; face index i renders SIDES[i]
+
 POINT_RADIUS = 0.02  # relative to scene extent; larger than Polyscope's tiny default
 
 AXES_NAME = "world axes"  # a space => never a valid step name, so it can't collide / be picked
@@ -34,16 +35,15 @@ def _quad_mesh(point_arrays):
     return np.asarray(vertices), np.asarray(faces)
 
 
-def operation_geometry(operation):
-    """(vertices, quad_faces) for one operation -- one quad per named side."""
-    return _quad_mesh([operation.get_face(side).point_array for side in SIDES])
-
-
-def _render_operation(step, context):
+def _render_element(step, context):
+    """Any solid — operation, shape, or a copy of either — as the side quads of all its
+    operations. `operations_of` unifies the single-op (a bare operation) and multi-op (a
+    shape) cases, so one renderer covers all three render kinds."""
     value = context.get(step)
     if value is None:
         return
-    ps.register_surface_mesh(step.name, *operation_geometry(value))
+    arrays = [op.get_face(side).point_array for op in operations_of(value) for side in SIDES]
+    ps.register_surface_mesh(step.name, *_quad_mesh(arrays))
 
 
 def _render_sketch(step, context):
@@ -70,15 +70,6 @@ def _render_sketch_faces(step, context):
     ps.register_surface_mesh(step.name, *_quad_mesh([face.point_array for face in value.faces]))
 
 
-def _render_shape(step, context):
-    """A shape (ExtrudedShape, …) draws as the six named sides of each of its operations."""
-    value = context.get(step)
-    if value is None:
-        return
-    arrays = [op.get_face(side).point_array for op in value.operations for side in SIDES]
-    ps.register_surface_mesh(step.name, *_quad_mesh(arrays))
-
-
 def _render_point(step, context):
     value = context.get(step)
     if value is None:
@@ -95,18 +86,31 @@ def _render_curve(step, context):
     ps.register_curve_network(step.name, nodes, "line")
 
 
+def _render_surface(step, context):
+    """A reference STL: its triangles, muted and edge-free so it reads as a backdrop to build
+    against, not as mesh output."""
+    value = context.get(step)
+    if value is None:
+        return
+    mesh = ps.register_surface_mesh(step.name, *value)
+    mesh.set_color((0.7, 0.7, 0.75))
+    mesh.set_edge_width(0.0)
+
+
 def _render_nothing(step, context):
     """Steps with no own geometry (configuring steps like chop/patch) render nothing."""
 
 
 RENDERERS = {
-    "operation": _render_operation,
+    "operation": _render_element,
+    "shape": _render_element,
+    "element": _render_element,  # a copy (operation or shape) — kind unknown until built
     "sketch": _render_sketch,
     "sketch_faces": _render_sketch_faces,
-    "shape": _render_shape,
     "face": _render_face,
     "point": _render_point,
     "curve": _render_curve,
+    "surface": _render_surface,
 }
 
 

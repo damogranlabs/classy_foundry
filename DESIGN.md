@@ -203,7 +203,7 @@ Each base implements `build()` + `to_lines()` **once**, parameterised by a class
 | `ProducingStep` *(exists)* | `name = cb.Cls(args…)` (args may be `ref`s/points) | `cb_name` | Face, MappedSketch, all Sketch-catalogue, Box/Extrude/Rotate/Loft/Wedge, all Shapes & Stacks, all Solid-catalogue |
 | `ValueStep` *(exists)* | `name = <literal>` (single field is the output) | — | Single point |
 | `ConfiguringStep` *(exists)* | `<ref>.method(args…)` (in-place; output = target) | `cb_method` | Translate, Rotate, Scale, Project, Set patch, Grade axis (chop), Grade edge |
-| `DerivedStep` *(exists)* | `name = <ref>.method(args…)` (new value from an ancestor) | `cb_method` | **Point on curve** *(done)*, copy, Extract face |
+| `DerivedStep` *(exists)* | `name = <ref>.method(args…)` (new value from an ancestor) | `cb_method` | **Point on curve** *(done)*, copy. (Extract face turned out to fit the **face-picker** better — a `face` input + custom build — than a method-on-ref.) |
 | `HelperStep` *(exists)* | `name = cb.Cls(target, args…)` then `name.<call>()` (helper object + finishing call) | `cb_name`, `cb_call` | auto-graders *(done)*, mesh/sketch/shape **smoothers** (optimizers split into producing + clamp/optimize steps — see **Optimization**) |
 
 **`HelperStep` — the "helper object + call" family (decided).** classy_blocks' graders,
@@ -522,17 +522,19 @@ real output.
 
 | Step type | classy_blocks | Spatial projection (clarity win) |
 |---|---|---|
-| Point *(done)* / Curve *(done)* / Surface | points, curves, surfaces | place/pick points; **Points-file curve** *(implemented — `LinearInterpolatedCurve` from a file)*; load STL surfaces as pickable meshes *(deferred)* |
+| Point *(done)* / Curve *(done)* / Surface *(STL load+show done)* | points, curves, surfaces | place/pick points; **Points-file curve** *(implemented — `LinearInterpolatedCurve` from a file)*; **STL surface** *(implemented — load via trimesh, shown muted as a reference backdrop; reference-only, **projection** wires the path into codegen later)* |
 | `Face` *(done)* | 4 points + curved edges | pick/place corners; edge types per side *(edges deferred)* |
+| `ExtractFace` *(done)* | `op.get_face(side)` | **click a face** on any operation/shape → a reusable profile (a `FaceStep`, so Extrude/Loft accept it). Uses the patch face-picker (a single `face` input), not the ancestor's `get_closest_face(point)` — exact, click-the-face |
+| `Connector` *(done)* | `cb.Loft(faceA, faceB)` | **click two faces** → the bridging block, in one step (fast intermediate geometry). Two `face` inputs |
 | `MappedSketch` *(done)* | positions + quads | the sketcher *(implemented)* — kept **separate** from Face (decided); now a `SketchStep` so it feeds Shapes |
 | Sketch catalogue *(done)* | Disk/Oval/… sketches | declared from points; `"sketch_faces"` render |
 | `Box`/`Extrude`/`Loft`/`Revolve`/`Wedge` *(done)* | sweep a profile | reference a profile step; live preview; pick points for revolve axis / 2nd loft profile |
 | Shapes & catalogue solids *(done)* | sweep a sketch / ready-made solids | Extruded/Revolved/Lofted shape (sketch ref); Cylinder/Frustum/Elbow/rings/spheres (points). Grade with an **auto-grader** (no per-shape chopping — see below). |
 | `Chop` (grade) | `chop(axis, …)` | *implemented* (Grade axis step, **operations only**); spatial form (pick face → axis) later |
 | Auto-graders *(done)* | `FixedCount`/`Simple`/`Inflation` grader | a `HelperStep`: `cb.Grader(mesh, …).grade()`; grades every ungraded row → the one thing a Shape needs to write |
-| `SetPatch` (tag) | `set_patch(side, name)` | *deferred* — pick face(s) → name; `set_default_patch` not required to write |
+| `SetPatch` (tag) *(done)* | `op.set_patch(side, name)` per picked face | **click faces → name**: a patch is a name + a set of picked faces; the system derives each operation + side (see **Patches** below). Works on operations *and* shapes uniformly. `set_default_patch` not required to write |
 | `Project` | `project_*(geometry)` | *deferred* — pick edge/face → pick target surface/curve |
-| `Transform` | translate/rotate/scale | *UI not yet settled* (deferred) |
+| `Transform` *(translate/rotate/scale/copy done)* | `op.translate/rotate/scale(…)`, `op.copy()` | plain `ConfiguringStep`s on cb's uniform element protocol (operations/shapes/sketches/faces). **Numeric** (the "gizmo vs numeric" UI question sidestepped — numeric first); `origin` is a pickable `point` pivot (default world origin, not cb's centroid). `Copy` is a `DerivedStep` (new element, `render_kind="element"` → unified renderer); copies are first-class targets (transform/patch/connect a copy). Patterned multi-copy (**arrays**) is left to **Stacks**, not a standalone step |
 | Smooth / Optimize | Sketch/Shape/Mesh smoothers & optimizers | smoothers are `HelperStep`s; optimizers decompose into producing + per-kind **clamp steps** + optimize, on cb's existing clamp API (see **Optimization & smoothing**) |
 | Write | assemble/grade/write | *implemented* — Write blockMeshDict button (no default patch needed) |
 
@@ -544,9 +546,23 @@ everything else. A grader grades only rows still ungraded (`row.count == 0`), so
 `Chop` and a grader compose. This is what unblocks every Shape / catalogue solid from
 writing a blockMeshDict — *without* any shape-specific chop code.
 
+**Patches (decided, done).** classy_blocks' per-shape patch shortcuts (`set_outer_patch`,
+`set_symmetry_patch`, …) differ shape to shape — `if`-ing to each is exactly what we avoid.
+Instead a patch is **a name plus a set of clicked faces**, and the system derives the
+operation + side of each. This is uniform across bare operations *and* shapes/stacks: the
+viewport renders an operation as six side quads and a shape as `len(operations) × 6`, so a
+picked face index alone gives both the operation (`operations_of(value)[index // 6]`, where
+`operations_of = getattr(value, "operations", [value])` — a shape exposes `.operations`, a
+bare op *is* its operation) and the side (`SIDES[index % 6]`). A `FaceRef(step, index)`
+stores only that (a step reference + an int, so it pickles), resolving lazily at build
+(`op.set_patch(side, name)`) and codegen. The picker gains an *accumulating* `face_list`
+mode (each click appends, stays armed). No per-shape code, no second dropdown — the same
+flat-index idea generalizes to the planned spatial Chop (pick face → axis).
+
 **Scope now.** The build→grade→write loop is closed (point/profile → sweep → grade →
-blockMeshDict). Patches, projection, transforms, optimization, and the spatial grading
-UI are deferred — all ride the proven `pick` foundation, so deferral costs no rework.
+**patch** → blockMeshDict), so a runnable case comes out. Projection, transforms, and the
+spatial grading UI are deferred — all ride the proven `pick` foundation, so deferral costs
+no rework.
 
 ---
 
@@ -610,7 +626,9 @@ its identity; nothing more is needed to name the vertex a clamp acts on.
 **Smart points were explored and rejected.** The earlier plan had classy_blocks grow *smart
 points* (a point carrying its own constraint) + an `AutoOptimizer` that reads them. Pursuing
 it meant pulling surfaces / `trimesh` into the geometry primitives and overhauling cb's point
-types to solve what is a **GUI** problem — solving one problem by creating three. The
+types to solve what is a **GUI** problem — solving one problem by creating three. (Note: the
+objection was to trimesh *inside cb's primitives*; trimesh as a foundry-side dependency for
+loading reference STLs to display is a separate, accepted call.) The
 blinking-red-light test failed, so **classy_blocks is left untouched** and the feature is
 built entirely on the foundry side, against cb's existing coordinate-addressed clamp API.
 
@@ -641,7 +659,8 @@ refuses degenerate cells and the user sees the problem in the viewport — valid
 perception + the downstream, not in defensive code.
 
 (The on-surface clamp case still waits on cb surface support — `ParametricSurfaceClamp` is
-function-based — and STL surfaces, both deferred. On-line/on-plane/on-curve need nothing new.)
+function-based — so clamping *to* a loaded STL is deferred even though STL load+display now
+exists. On-line/on-plane/on-curve need nothing new.)
 
 ---
 
@@ -710,8 +729,11 @@ separation mechanically:
 **Next:**
 
 1. **Stacks** — `Extruded/Revolved/Lofted stack` (the remaining shape family).
-2. **Extract face** — another `DerivedStep` (`name = op.get_face(side)`); pick the op + side.
-   (`DerivedStep` now exists — first member was `OnCurvePoint`.)
+2. **Extract face** *(done)* — `ExtractFace`: click a face → `op.get_face(side)` as a reusable
+   profile, on a shared `FaceStep` base (Extrude/Loft `accept` it). Reuses the patch
+   face-picker via a single `face` input — see **Patches** / `steps/faces.py`.
+   **Connector** *(done)* — `cb.Loft(faceA, faceB)`: click two faces → the bridging block in
+   one step (fast intermediate geometry).
 3. **Smoothers** — `MeshSmoother` (mesh-targeted, like a grader) + `SketchSmoother` (first
    element-targeted `HelperStep`). Cheap, run inline, no clamps. See **Optimization &
    smoothing**.
@@ -725,14 +747,24 @@ separation mechanically:
    per-kind **clamp steps** (Free/Line/Plane/Radial/Curve; point named via the existing
    dropper) + an `Optimize` step (Run button, `max_iterations` field, `build(optimize=…)`).
    See **Optimization & smoothing → Clamps are explicit steps**.
-6. **Edges / projections** — to discuss; the Points-file curve is the foundation (edges on
+6. **Patches** *(done)* — `SetPatch`: click faces → name, uniform over operations and shapes
+   via the flat face-index → (operation, side) mapping; accumulating `face_list` pick +
+   `FaceRef`. See **Patches (decided, done)**.
+7. **STL surface reference** *(done)* — `Surface`: load via trimesh, show muted as a backdrop;
+   reference-only (projection wires the path into codegen later). See the step table.
+8. **Transforms** *(translate/rotate/scale/copy done)* — `Translate`/`Rotate`/`Scale`
+   (`ConfiguringStep`s) + `Copy` (`DerivedStep` → new element, unified `"element"` renderer),
+   on cb's uniform element protocol; numeric, pickable-point pivot. Patterned multi-copy
+   (linear/polar **arrays**) is **left to Stacks** (cb's own multi-element family — see below),
+   not a standalone array step. See the `Transform` table row.
+9. **Edges / projections** — to discuss; the Points-file curve is the foundation (edges on
    faces, projection targets).
-7. **Patches / projection / transforms** — as their bases land.
-8. **List → viewport highlight** — the reverse of selection (needs our own highlight,
-   since Polyscope has no `set_selection`).
+10. **List → viewport highlight** — the reverse of selection (needs our own highlight,
+    since Polyscope has no `set_selection`).
 
-**Deferred (decided):** palette categorization polish, the transform UI (gizmo vs
-numeric, in-place vs derived copy/array), STL surfaces, non-planar sketches, a file-dialog
+**Deferred (decided):** palette categorization polish, the transform **gizmo** (numeric
+translate/rotate/scale/copy done; patterned multi-copy is left to **Stacks**, not a standalone
+array step), projection onto STL surfaces (load+show done), non-planar sketches, a file-dialog
 picker for `points_file` (path is plain text for now). A standalone `Vector` reference was
 tried and **reverted** (an arrow-rendered point) — a proper `Axis` belongs in classy_blocks
 core; reference-point + literal axis covers the vast majority. `QuarterDisk`/`Annulus`/full
@@ -745,10 +777,10 @@ export to add).
   - ✓ Single point (fixed)
   - ✓ Point on curve (a curve + parameter → `curve.get_point(param)`; referenceable like any point)
   - ✓ Points file (a list of 3d points → `LinearInterpolatedCurve`)
-  - Surface (path to an STL surface)
+  - ✓ STL surface (load via trimesh, shown as a muted reference backdrop)
 - Flat
   - ✓ Face (specify points manually)
-  - Extract face (from an operation)
+  - ✓ Extract face (click a face on an operation/shape)
   - ✓ Mapped sketch (with an editor)
   - Sketches catalogue:
     - Quarter circle *(absent — `QuarterDisk` not cb-exported)*
@@ -765,6 +797,7 @@ export to add).
     - ✓ Extrude
     - ✓ Rotate *(= `Revolve` operation)*
     - ✓ Loft
+    - ✓ Connector *(loft between two clicked faces)*
     - ✓ Wedge
   - Shapes
     - ✓ Extruded shape
@@ -785,10 +818,10 @@ export to add).
     - ✓ Half sphere *(`Hemisphere`)*
     - Sphere *(absent — full `Sphere` not cb-exported)*
 - Modifiers
-  - copy
-  - Translate
-  - Revolve
-  - Scale
+  - ✓ Copy *(`element.copy()` → new solid; one renderer covers op/shape copies)*
+  - ✓ Translate
+  - ✓ Rotate *(cb `rotate`; pivot `origin` is a pickable point)*
+  - ✓ Scale
   - Modify edge
     - Arc (midpoint)
     - Arc (origin)
@@ -813,7 +846,7 @@ export to add).
     - ✓ Simple
     - ✓ Inflation
 - Patches
-  - Set patch (one or multiple operation sides)
+  - ✓ Set patch (click faces → name; operations and shapes)
   - Default
 
 ---

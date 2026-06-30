@@ -5,7 +5,7 @@ sides. Both profiles are references to Face steps.
 """
 
 from .base import ProducingStep
-from .face import Face
+from .face import FaceStep
 
 
 class Loft(ProducingStep):
@@ -16,6 +16,6 @@ class Loft(ProducingStep):
     label = "Loft"
     render_kind = "operation"
     SCHEMA = {
-        "bottom_face": {"kind": "ref", "label": "Bottom profile", "default": None, "accepts": Face},
-        "top_face": {"kind": "ref", "label": "Top profile", "default": None, "accepts": Face},
+        "bottom_face": {"kind": "ref", "label": "Bottom profile", "default": None, "accepts": FaceStep},
+        "top_face": {"kind": "ref", "label": "Top profile", "default": None, "accepts": FaceStep},
     }

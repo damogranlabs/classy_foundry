@@ -123,11 +123,69 @@ def _point_field(step, field, spec, model, session):
     return changed
 
 
+def _face_label(face):
+    """Human-readable id of a picked face: 'cylinder · op2 · left' (a shape addresses its
+    sub-operation) or 'box · top' (a bare operation)."""
+    if face.step.render_kind == "shape":
+        return f"{face.step.name} · op{face.index // 6} · {face.side()}"
+    return f"{face.step.name} · {face.side()}"
+
+
+def _face_list_field(step, field, spec, model, session):
+    """A patch's faces: a toggle that arms accumulating viewport picks (see picker), plus the
+    list of clicked faces, each removable. The picks themselves land in `handle_pick`."""
+    psim.TextUnformatted(spec["label"])
+    target = (step, field, None)
+    armed = session.get("pick") == target
+    if psim.Button("stop picking" if armed else "pick faces"):
+        session["pick"] = None if armed else target
+    faces = step.values[field]
+    remove = None
+    for i, face in enumerate(faces):
+        psim.PushID(i)
+        psim.TextUnformatted(_face_label(face))
+        psim.SameLine()
+        if psim.SmallButton("x"):
+            remove = i
+        psim.PopID()
+    if remove is not None:
+        faces.pop(remove)
+        return True
+    return False
+
+
+def _face_field(step, field, spec, model, session):
+    """A single picked face: a toggle that arms a one-shot viewport pick (see picker), then
+    shows the face it landed on. Re-picking replaces it; 'x' clears it. `PushID(field)` keeps
+    the per-field buttons distinct (two `face` fields, e.g. a Connector's, share labels)."""
+    psim.PushID(field)
+    psim.TextUnformatted(spec["label"])
+    target = (step, field, None)
+    armed = session.get("pick") == target
+    current = step.values[field]
+    if psim.Button("stop picking" if armed else "pick face"):
+        session["pick"] = None if armed else target
+    psim.SameLine()
+    psim.TextUnformatted(_face_label(current) if current is not None else "<none>")
+    changed = False
+    if current is not None:
+        psim.SameLine()
+        if psim.SmallButton("x"):
+            step.values[field] = None
+            changed = True
+    psim.PopID()
+    return changed
+
+
 def _edit_field(step, field, spec, model, session):
     if spec["kind"] == "ref":
         return _ref_field(step, field, spec, model, session)
     if spec["kind"] in ("point", "point_list"):
         return _point_field(step, field, spec, model, session)
+    if spec["kind"] == "face":
+        return _face_field(step, field, spec, model, session)
+    if spec["kind"] == "face_list":
+        return _face_list_field(step, field, spec, model, session)
     psim.PushID(field)
     psim.TextUnformatted(spec["label"])
     psim.SetNextItemWidth(-1)
@@ -258,22 +316,56 @@ def _draw_steps(model, sketch_editor, session):
     return dirty
 
 
-def _draw_mesh_actions(model, session):
-    if psim.Button("Export script"):
-        with open(SCRIPT_PATH, "w") as file:
-            file.write(model.to_script())
-    psim.SameLine()
+def _report(session, success, action, *args):
+    """Run a file action, reporting its outcome on the status line; return whether it ran.
+    The one place file errors (missing model, invalid mesh, …) are turned into feedback —
+    so Save/Load/Export/Write all fail visibly instead of crashing the frame callback."""
+    try:
+        action(*args)
+        session["status"] = success
+        return True
+    except Exception as error:
+        session["status"] = f"Failed: {type(error).__name__}: {error}"
+        return False
+
+
+def _export_script(model):
+    with open(SCRIPT_PATH, "w") as file:
+        file.write(model.to_script())
+
+
+def _reset_editing(model, sketch_editor, session):
+    """Drop the editing cursors after a load: `active`/`marker`/`pick` (and the sketcher's
+    own sketch handle) pointed at the steps the load just replaced. Land on the first step."""
+    sketch_editor.activate(None)
+    session["pick"] = session["marker"] = None
+    session["active"] = model.steps[0] if model.steps else None
+
+
+def _draw_mesh_actions(model, sketch_editor, session):
+    """Persistence + output. The model path is editable, so several workflows live in named
+    files; Save/Load round-trip the recipe (pickle). Returns True if the view must rebuild."""
+    dirty = False
+    session.setdefault("model_path", MODEL_PATH)
+    psim.TextUnformatted("Model file")
+    psim.SetNextItemWidth(-1)
+    _, session["model_path"] = psim.InputText("##model_path", session["model_path"], max_str_len=256)
+    path = session["model_path"]
     if psim.Button("Save"):
-        model.save(MODEL_PATH)
+        _report(session, f"Saved {path}", model.save, path)
+    psim.SameLine()
+    if psim.Button("Load") and _report(session, f"Loaded {path}", model.load, path):
+        _reset_editing(model, sketch_editor, session)
+        dirty = True
+    psim.Separator()
+    if psim.Button("Export script"):
+        _report(session, f"Wrote {SCRIPT_PATH}", _export_script, model)
     psim.SameLine()
     if psim.Button("Write blockMeshDict"):
-        try:
-            model.write_blockmesh(BLOCKMESH_PATH)
-            session["status"] = f"Wrote {BLOCKMESH_PATH}"
-        except Exception as error:
-            session["status"] = f"Write failed: {type(error).__name__}: {error}"
+        _report(session, f"Wrote {BLOCKMESH_PATH}", model.write_blockmesh, BLOCKMESH_PATH)
     if session.get("status"):
         psim.TextUnformatted(session["status"])
+    return dirty
 
 
 def draw_panel(model, sketch_editor, session):
@@ -285,5 +377,5 @@ def draw_panel(model, sketch_editor, session):
     if psim.CollapsingHeader("Steps"):
         dirty |= _draw_steps(model, sketch_editor, session)
     if psim.CollapsingHeader("Mesh"):
-        _draw_mesh_actions(model, session)
+        dirty |= _draw_mesh_actions(model, sketch_editor, session)
     return dirty

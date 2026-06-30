@@ -7,7 +7,7 @@ license = "MIT"
 keywords = ["classy_foundry", "classy_blocks", "GUI", "OpenFOAM", "blockMesh"]
 authors = [{ name = "Nejc Jurkovic", email = "nejc.jurkovic@proton.me" }]
 requires-python = ">=3.9"
-dependencies = ["polyscope", "classy_blocks"]
+dependencies = ["polyscope", "classy_blocks", "trimesh"]
 
 [project.urls]
 "Homepage" = "https://github.com/damogranlabs/classy_foundry"

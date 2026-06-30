@@ -74,6 +74,7 @@ CODEGEN = {
     "point_list": lambda v: "[" + ", ".join(_point_code(e) for e in v) + "]",
     "index_list": lambda v: repr([[int(i) for i in row] for row in v]),
     "points_file": lambda v: f"np.loadtxt({v!r})",
+    "text": lambda v: repr(v),
     "choice": lambda v: repr(v),
     "ref": lambda step: step.name if step is not None else "None",
 }
@@ -155,6 +156,8 @@ REF_EXTRACT = {
     "ref": lambda v: [v] if v is not None else [],
     "point": lambda v: [v] if _is_ref(v) else [],
     "point_list": lambda v: [e for e in v if _is_ref(e)],
+    "face": lambda v: [v.step] if v is not None else [],
+    "face_list": lambda v: [face.step for face in v],
 }
 
 # kind -> stored value turned into a live cb argument at build time

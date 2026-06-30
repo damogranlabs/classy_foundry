@@ -7,9 +7,10 @@ and add it here. The palette groups these by `category`, preserving this list's 
 
 from .box import Box
 from .chop import Chop
+from .connector import Connector
 from .curve import PointsFileCurve
 from .extrude import Extrude
-from .face import Face
+from .face import ExtractFace, Face
 from .graders import FixedCount, Inflation, Simple
 from .loft import Loft
 from .mapped_sketch import MappedSketch
@@ -22,6 +23,7 @@ from .optimize import (
     RadialClamp,
     SketchOptimizer,
 )
+from .patch import SetPatch
 from .point import OnCurvePoint, Point
 from .revolve import Revolve
 from .shapes import (
@@ -37,6 +39,8 @@ from .shapes import (
     RevolvedRing,
     RevolvedShape,
 )
+from .surface import Surface
+from .transform import Copy, Rotate, Scale, Translate
 from .sketches import BoxedCircle, Circle, HalfCircle, OneCoreCircle, Oval
 from .wedge import Wedge
 
@@ -45,8 +49,10 @@ CATALOG = [
     Point,
     PointsFileCurve,
     OnCurvePoint,
+    Surface,
     # Flat
     Face,
+    ExtractFace,
     MappedSketch,
     # Flat / Sketches catalogue
     HalfCircle,
@@ -59,6 +65,7 @@ CATALOG = [
     Extrude,
     Revolve,
     Loft,
+    Connector,
     Wedge,
     # Solids / Shapes
     ExtrudedShape,
@@ -73,6 +80,11 @@ CATALOG = [
     EighthSphere,
     QuarterSphere,
     HalfSphere,
+    # Modifiers
+    Copy,
+    Translate,
+    Rotate,
+    Scale,
     # Optimizers
     SketchOptimizer,
     # Optimizers / Clamps
@@ -89,4 +101,6 @@ CATALOG = [
     FixedCount,
     Simple,
     Inflation,
+    # Patches
+    SetPatch,
 ]
