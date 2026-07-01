@@ -16,8 +16,32 @@ import polyscope.imgui as psim
 
 from ..geom import ray_plane_hit
 from ..steps.point import PointStep
+from . import labels
 
 LEFT_MOUSE = 0
+
+POINT_LABEL_COLOR = (0.75, 0.9, 1.0)   # point indices — light blue
+BLOCK_LABEL_COLOR = (1.0, 0.85, 0.35)  # block (quad) indices — amber
+
+
+def draw_number_labels(sketch):
+    """Per-frame text overlay for the sketch being edited: the point index at each vertex and
+    the block index at each quad centroid — so the tables' index-based editing (a quad is four
+    point indices) reads directly off the viewport. Camera-dependent, so the app callback runs
+    it every frame; a quad referencing an out-of-range point is skipped mid-edit."""
+    if not sketch.positions:
+        return
+    positions = np.asarray(sketch.positions, float).reshape(-1, 3)
+    labels.draw_labels([(positions[i], str(i)) for i in range(len(positions))], POINT_LABEL_COLOR)
+    labels.draw_labels([(positions[quad].mean(axis=0), str(i))
+                        for i, quad in enumerate(sketch.quads) if quad and max(quad) < len(positions)],
+                       BLOCK_LABEL_COLOR)
+
+# The Points/Quads tables share a layout: a narrow index column, a *stretching* values column
+# (the editable coordinates / corner indices), and a narrow delete column. Declaring this sizing
+# is what stops ImGui's default equal-thirds — which starved the values while bloating the index.
+INDEX_WIDTH = 26.0
+DELETE_WIDTH = 24.0
 
 
 class SketchEditor:
@@ -140,28 +164,41 @@ class SketchEditor:
     # ---------- panel ----------
 
     def draw(self):
-        """Mode buttons + points/quads tables; return True if geometry changed."""
-        dirty = self._mode_buttons()
-        dirty |= self._points_table()
-        dirty |= self._quads_table()
+        """A Points section (Add point + table) and a Quads section (Add quad + table), each
+        with its own add-mode toggle, then a trailing Done. Returns True if geometry changed."""
+        dirty = self._section("Points", "Add point", "point", self._points_table)
+        dirty |= self._section("Quads", f"Add quad ({len(self.pending)}/4)", "quad", self._quads_table)
+        dirty |= self._mode_button("Done", None)  # leaves add-mode; sits below both tables
         return dirty
 
-    def _mode_buttons(self):
+    def _section(self, header, add_label, mode, table):
+        psim.TextUnformatted(header)
+        dirty = self._mode_button(add_label, mode)
+        return table() or dirty
+
+    def _mode_button(self, label, mode):
+        """A mode toggle rendered as a Selectable so the active add-mode stays highlighted;
+        sized snug to its label (the Add-quad label carries a live `(n/4)` corner count)."""
         changed = False
-        for label, mode in (("Add point", "point"), ("Add quad", "quad"), ("Done", None)):
-            highlighted = self.mode == mode
-            if psim.Selectable(label, highlighted, size=(70, 0)):
-                self.mode, self.pending = mode, []
-                changed = True
-            psim.SameLine()
-        psim.TextUnformatted(f"  ({len(self.pending)}/4)" if self.mode == "quad" else "")
+        if psim.Selectable(label, self.mode == mode, size=(psim.CalcTextSize(label)[0] + 16.0, 0)):
+            self.mode, self.pending = mode, []
+            changed = True
         return changed
+
+    def _begin_grid_table(self, name):
+        """Begin a points/quads table with index|values|delete columns sized so the editable
+        values column takes all the width the index and delete buttons don't need."""
+        if not psim.BeginTable(name, 3):
+            return False
+        psim.TableSetupColumn("#", psim.ImGuiTableColumnFlags_WidthFixed, INDEX_WIDTH)
+        psim.TableSetupColumn("values", psim.ImGuiTableColumnFlags_WidthStretch)
+        psim.TableSetupColumn("x", psim.ImGuiTableColumnFlags_WidthFixed, DELETE_WIDTH)
+        return True
 
     def _points_table(self):
         dirty = False
         delete = None
-        psim.TextUnformatted("Points")
-        if not psim.BeginTable("points", 3):
+        if not self._begin_grid_table("points"):
             return False
         for i, position in enumerate(self.sketch.positions):
             psim.PushID(i)
@@ -170,6 +207,7 @@ class SketchEditor:
             if psim.Selectable(str(i), self.selected == i):
                 self.selected = i
             psim.TableNextColumn()
+            psim.SetNextItemWidth(-1)
             changed, new = psim.InputFloat3("", position)
             if changed:
                 self.sketch.positions[i] = list(new)
@@ -196,8 +234,7 @@ class SketchEditor:
     def _quads_table(self):
         dirty = False
         delete = None
-        psim.TextUnformatted("Quads")
-        if not psim.BeginTable("quads", 3):
+        if not self._begin_grid_table("quads"):
             return False
         for i, quad in enumerate(self.sketch.quads):
             psim.PushID(1000 + i)
@@ -205,6 +242,7 @@ class SketchEditor:
             psim.TableNextColumn()
             psim.TextUnformatted(str(i))
             psim.TableNextColumn()
+            psim.SetNextItemWidth(-1)
             changed, new = psim.InputInt4("", quad)
             if changed:
                 self.sketch.quads[i] = list(new)

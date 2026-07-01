@@ -48,7 +48,8 @@ def _render_element(step, context):
     value = context.get(step)
     if value is None:
         return
-    ps.register_surface_mesh(step.name, *_quad_mesh(element_quads(value)))
+    mesh = ps.register_surface_mesh(step.name, *_quad_mesh(element_quads(value)))
+    mesh.set_edge_width(1.0)  # show block borders by default (the Polyscope edge-width setting)
 
 
 def _render_sketch(step, context):
@@ -57,7 +58,8 @@ def _render_sketch(step, context):
     points = np.asarray(step.positions, float).reshape(-1, 3)
     ps.register_point_cloud(points_cloud_name(step.name), points).set_radius(POINT_RADIUS)
     if step.quads:
-        ps.register_surface_mesh(f"{step.name}::quads", points, np.asarray(step.quads, int))
+        mesh = ps.register_surface_mesh(f"{step.name}::quads", points, np.asarray(step.quads, int))
+        mesh.set_edge_width(1.0)  # show block borders by default (the Polyscope edge-width setting)
 
 
 def _render_face(step, context):

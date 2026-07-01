@@ -348,6 +348,22 @@ vector-quantity substitute. Its length is `0.5 · get_length_scale()`, so it tra
 scene (see **Scene environment** below) — legible on any model, and it no longer resizes as
 geometry is added/removed.
 
+**Block borders (implemented).** Every block surface — the sketch's quad mesh and each
+operation/shape's side quads — registers with `set_edge_width(1.0)` (Polyscope's own edge-width
+setting), so blocks read as bordered cells by default instead of a flat merged surface.
+
+**Number labels — `view/labels.py` (implemented).** Polyscope has **no native text/label
+quantity**, so numbers that must sit *at* a world point are drawn ourselves: `draw_labels`
+projects world points to ImGui screen space via the view camera's own matrices
+(`get_view_mat` + fov/aspect → the standard perspective divide; points behind the camera go NaN
+and are skipped) and writes each with the **ImGui foreground draw list** (`AddText`). Because it
+is camera-dependent it runs **every frame from the app callback** (like `cues`), not in the
+rebuild. Its first use is the **sketch number overlay** (`sketch_editor.draw_number_labels`,
+drawn only while the active step is a `MappedSketch`): the **point index** at each vertex (light
+blue) and the **block index** at each quad centroid (amber) — so the points/quads tables'
+index-based editing (a quad *is* four point indices) reads straight off the viewport. This is the
+same projection any future world-anchored label (patch names, dimensions) would reuse.
+
 **Scene environment — own the extents (decided).** By default Polyscope **re-fits the scene to
 the data on every structure change**; since the viewport does `remove_all_structures` + re-add
 on every edit, that made the length scale, ground-plane height/grid, camera scale, and triad all
@@ -499,14 +515,18 @@ built and not drawn. One mechanism that pays for many:
 
 The marker sits on **any** step uniformly — "a step is a step", no per-type behaviour.
 
-**Two cursors, kept separate.** `session["active"]` (which step's panel is open / highlighted)
-and the marker (how far the model builds) are independent. A bare viewport **selection must
-not move the marker** — clicking around to inspect must never silently rebuild/re-optimize.
-The marker moves only on two deliberate gestures: clicking its **per-row toggle** (`(o)`/`( )`,
-click the current marker again to clear → show-all), or pressing a step's **Edit** button
-(which rolls the marker to that step so you edit in-context, downstream suspended, exactly like
-CAD). So `sync_selection` stays a pure highlighter; coupling is one-directional (Edit/toggle →
-marker; never selection → marker).
+**Selecting a step *is* rolling the marker (unified, revised).** The earlier design kept two
+independent cursors — `session["active"]` (which step's panel is open) and the marker (how far
+the model builds) — moved by separate gestures (a casual list-click set only `active`; a per-row
+`(o)`/`( )` toggle or an **Edit** button moved the marker). That split three controls across the
+row (rollback toggle, type button, Edit) for one intent: *work on this step*. So they were
+**merged** — a step's row button now sets **both** `active` and `marker`, always editing
+in-context (downstream suspended, exactly like CAD), and the separate rollback toggle and Edit
+button are gone. Only two per-row controls remain (plus delete): the `::` reorder handle and the
+step button. This can't cause the thing "kept separate" guarded against (a stray rebuild from
+*inspecting*), because ambient viewport selection was already removed (see **Visual cues**) —
+nothing moves the active step except a deliberate list-click. Adding a step clears the marker to
+show-all so the new step is visible; "show everything" is otherwise just selecting the last step.
 
 This changes the rebuild cadence (**Resolved/proven**): `sync_display` builds the **prefix up
 to the marker**, not the whole list.
@@ -556,10 +576,12 @@ to the marker**, not the whole list.
   classic ImGui swap-on-cross idiom: `IsItemActive` + `GetMouseDragDelta`). A move blocked by
   the no-forward-reference guard simply doesn't reset the delta, so the drag *sticks* at the
   dependency wall — the guard rendered as **felt resistance**, no extra code.
-- **Rollback marker** *(implemented)* — a per-row click toggle `(o)`/`( )` sets/clears
-  `session["marker"]` (a *step*, not an index); the viewport builds the prefix up to it
-  (`model.prefix` / `sync_display(upto=…)`), rows past it greyed. Click, not drag — the
-  affordance is simpler and sufficient (no `InvisibleButton`/draw-list handle needed).
+- **Rollback marker** *(implemented; no longer a separate control)* — selecting a step (its row
+  button) rolls `session["marker"]` (a *step*, not an index) to that step, so the viewport builds
+  the prefix up to the step you're editing (`model.prefix` / `sync_display(upto=…)`), rows past it
+  greyed. There is no per-row `(o)`/`( )` toggle and no separate Edit button — one gesture
+  selects, edits, and rolls the marker (see **Rollback marker** above). Adding a step clears the
+  marker back to show-all.
 
 ---
 
@@ -794,9 +816,10 @@ separation mechanically:
    smoothing**.
 4. **Rollback marker + drag-reorder** *(implemented; live drag-feel pending eyes)* —
    `sync_display`/`model.build`/`model.prefix` build the **prefix up to the marker** (a step
-   ref, `None`=all); per-row `(o)` marker toggle + `::` drag-reorder replace the up/down
-   buttons; the **Edit** button rolls the marker to its step. Two cursors (`active` vs marker)
-   kept separate. See **Authoring model → Rollback marker**.
+   ref, `None`=all); a `::` drag-reorder handle replaces the up/down buttons. The rollback toggle
+   and separate Edit button were **removed** — selecting a step's row button now rolls the marker
+   to it (active *and* marker in one gesture; adding a step clears to show-all). See
+   **Authoring model → Rollback marker**.
 5. **Optimizers** *(implemented — `SketchOptimizer` only; Shape/Mesh deferred)* — built on
    cb's existing coordinate-addressed clamp API (smart points rejected). `OptimizerStep` +
    per-kind **clamp steps** (Free/Line/Plane/Radial/Curve; point named via the existing

@@ -10,7 +10,7 @@ from .view.cues import update_cues
 from .view.display import fit_view, pin_scene, sync_display
 from .view.panel import draw_panel
 from .view.picker import handle_pick
-from .view.sketch_editor import SketchEditor
+from .view.sketch_editor import SketchEditor, draw_number_labels
 
 
 def main():
@@ -47,6 +47,8 @@ def main():
                                               upto=session.get("marker"), optimize=optimize)
             dirty["flag"] = False
         update_cues(model, session)  # every frame: survives rebuilds, tracks same-structure re-clicks
+        if isinstance(active, MappedSketch):  # point/block number overlay for the edited sketch
+            draw_number_labels(active)
 
     ps.set_user_callback(callback)
     ps.show()

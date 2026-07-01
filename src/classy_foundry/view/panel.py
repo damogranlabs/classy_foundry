@@ -221,19 +221,6 @@ def _optimize_editor(step, sketch_editor, model, session):
 EDITORS = {MappedSketch: _sketch_editor, Optimize: _optimize_editor}
 
 
-def _marker_button(step, session):
-    """Rollback-marker toggle for a row: build the viewport up to *this* step; click the
-    current marker again to clear it back to show-all. Sets only `session['marker']`, never
-    `active` — the two cursors stay independent (see DESIGN: Rollback marker)."""
-    is_marker = session.get("marker") is step
-    clicked = psim.SmallButton("(o)##mark" if is_marker else "( )##mark")
-    if psim.IsItemHovered():
-        psim.SetTooltip("rollback marker — build up to here")
-    if clicked:
-        session["marker"] = None if is_marker else step
-    return clicked
-
-
 def _drag_handle(step, model):
     """Grab handle: hold and drag up/down to reorder, one swap per row-pitch crossed
     (the classic ImGui swap-on-cross idiom over `model.move`). A move blocked by the
@@ -258,8 +245,6 @@ def _drag_handle(step, model):
 def _draw_step_row(step, model, session, suspended):
     dirty = False
     psim.PushID(str(id(step)))
-    dirty |= _marker_button(step, session)  # bright even when suspended — it's the control
-    psim.SameLine()
     if suspended:  # rows after the marker aren't built; grey them to show it
         psim.PushStyleColor(psim.ImGuiCol_Text, (0.5, 0.5, 0.5, 1.0))
     dirty |= _drag_handle(step, model)
@@ -270,10 +255,7 @@ def _draw_step_row(step, model, session, suspended):
         model.rename(step, new)
     psim.SameLine()
     if psim.Selectable(type(step).__name__, session["active"] is step, size=(80, 0)):
-        session["active"] = step  # casual highlight — active only, marker untouched
-    psim.SameLine()
-    if psim.SmallButton("edit"):  # deliberate: edit in context — roll the marker here too
-        session["active"] = step
+        session["active"] = step   # edit in context — selecting a step rolls the marker here too
         session["marker"] = step
         dirty = True
     psim.SameLine()
