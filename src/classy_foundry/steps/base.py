@@ -101,6 +101,7 @@ class Step:
     category: tuple = ()  # palette path, e.g. ("Solids", "Simple"); nests into submenus
     label: str = ""  # palette menu label (falls back to the class name)
     render_kind = None  # view.display dispatch key (e.g. "operation"); None = not drawn
+    AXIS = None  # (origin_field, direction_field) -> a point-and-vector axis cue; None = none
 
     def __init__(self, name="", **values):
         self.name = name

@@ -6,10 +6,10 @@ import polyscope.imgui as psim
 from .model import Model
 from .steps.box import Box
 from .steps.mapped_sketch import MappedSketch
-from .view.display import sync_display
+from .view.cues import update_cues
+from .view.display import fit_view, pin_scene, sync_display
 from .view.panel import draw_panel
 from .view.picker import handle_pick
-from .view.selection import sync_selection
 from .view.sketch_editor import SketchEditor
 
 
@@ -24,6 +24,9 @@ def main():
     ps.init()
     ps.set_up_dir("z_up")
     ps.set_open_imgui_window_for_user_callback(False)  # we draw our own resizable window
+    pin_scene()  # own the scene extents (fixed world + shadow ground); no per-rebuild re-fit
+    sync_display(model, overlay=sketch_editor.render_overlay)  # register before the first fit
+    fit_view(model)  # frame the initial model once
     dirty = {"flag": True}
 
     def callback():
@@ -34,16 +37,16 @@ def main():
         psim.End()
         active = session.get("active")
         if session.get("pick") is not None:
-            changed |= handle_pick(model, session)  # ref-pick mode
+            changed |= handle_pick(model, session)  # a pick button is armed: click fills the input
         elif active is sketch_editor.sketch and sketch_editor.mode is not None:
             changed |= sketch_editor.handle_click(model)  # sketch placement mode
-        else:
-            sync_selection(model, session)  # idle: viewport -> list
+        # normal mode: no viewport selection — the active step is chosen from the list only
         optimize = session.pop("run_optimize", False)  # one-shot Run; reverts on next rebuild
         if changed or dirty["flag"] or optimize:
-            sync_display(model, overlay=sketch_editor.render_overlay,
-                         upto=session.get("marker"), optimize=optimize)
+            session["context"] = sync_display(model, overlay=sketch_editor.render_overlay,
+                                              upto=session.get("marker"), optimize=optimize)
             dirty["flag"] = False
+        update_cues(model, session)  # every frame: survives rebuilds, tracks same-structure re-clicks
 
     ps.set_user_callback(callback)
     ps.show()

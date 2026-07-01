@@ -339,17 +339,73 @@ Renderers (keyed by the step's declared `render_kind`):
   `register_curve_network(name, nodes, "line")`.
 - `None` (configuring steps like Chop) — nothing.
 
-**World-axes triad (implemented).** A fixed origin gizmo — three ambient (true-length)
-vector quantities on an origin point cloud, x=red/y=green/z=blue (the colour tuple *is* the
-unit direction) — re-added every rebuild inside `sync_display` (not the overlay slot, which
-the sketcher owns). Its structure name has a space (`"world axes"`), so it can never collide
-with a step name or resolve as a selection. Polyscope has **no built-in world-axes gizmo**;
-this is the ~5-line vector-quantity substitute.
+**World-axes triad (implemented).** An origin gizmo — three ambient vector quantities on an
+origin point cloud, x=red/y=green/z=blue (the colour tuple *is* the unit direction) — re-added
+every rebuild inside `sync_display` (not the overlay slot, which the sketcher owns). Its
+structure name has a space (`"world axes"`), so it can never collide with a step name or resolve
+as a selection. Polyscope has **no built-in world-axes gizmo**; this is the ~5-line
+vector-quantity substitute. Its length is `0.5 · get_length_scale()`, so it tracks the **pinned**
+scene (see **Scene environment** below) — legible on any model, and it no longer resizes as
+geometry is added/removed.
+
+**Scene environment — own the extents (decided).** By default Polyscope **re-fits the scene to
+the data on every structure change**; since the viewport does `remove_all_structures` + re-add
+on every edit, that made the length scale, ground-plane height/grid, camera scale, and triad all
+lurch around — and collapse when the scene emptied. So the app **takes control**: `pin_scene()`
+(at startup) calls `set_automatically_compute_scene_extents(False)`, pins a fixed default world
+(`set_bounding_box` + `set_length_scale`), and sets a quiet **`shadow_only`** ground (no changing
+tile grid). Nothing lurches on rebuild, and an empty scene can't collapse. `fit_view` (computes
+the model's own bounds via `display.model_bounds` — the shared `geometry_of`, overlays excluded so
+there's no feedback loop with the triad — then re-pins the world and reframes via
+`reset_camera_to_home_view`) runs **once at startup** to frame the initial model. **Manual re-fit
+uses Polyscope's own view controls** (its built-in reset/fit behaves the same on our pinned scene),
+so there's no separate app button. (`geometry_of` — `render_kind → (topology, data)` — is the one
+geometry table now shared by the renderers, the cue overlay, and the fit.)
 
 This replaces the FreeCAD attempt's two-tier `Part.*` scheme. (The fully assembled & graded
 cell mesh from `mesh.assemble()` could be an optional on-demand "show final cells" view
 later, but it is not the working display.) Curved-edge preview (`op.edges` → curve
 network) is a future enhancement, not yet built.
+
+### Visual cues — pre/selection highlighting (`view/cues.py`, done)
+
+The general highlighting workflow, **holding for every step type**. It is deliberately
+tool-scoped, not ambient:
+
+**No selection in normal mode (decided).** When you are not adding/editing a step, a bare
+viewport click selects nothing and changes nothing — the active step (whose panel is open) is
+chosen **only from the step list**. Selection — assigning an element to a tool input — happens
+*only* inside a step being edited, via that input's **pick** button (viewport) or its
+**dropdown** (list); the two are front-ends to one operation. This removed the old ambient
+viewport→list mirror *and* the `last_selection` pre-seed hack (both existed only to reconcile an
+ambient selection with picking, which no longer coexist — a net simplification; `selection.py`
+is gone).
+
+**Cues are sourced from the active step, per frame.** `cues.update_cues` derives a set of
+`(element, role)` and draws each as a **reserved-name overlay structure** (`"cue N"` — a space
+=> never a step name / selection, like `"world axes"`), *after* `sync_display` so the cues
+survive its `remove_all_structures`. An *element* is a `Step` (its whole output), a `FaceRef`
+(one face), or a literal `("point", [x,y,z])`; geometry comes from the cached build context
+(`session["context"]`, the `{step: cb_value}` map `sync_display` now returns) and reuses
+`display`'s primitives (`element_quads`, `_quad_mesh`, `POINT_RADIUS`). Four roles, by colour:
+
+- **output** (calm blue) — the active step's own produced geometry, so you see what you edit;
+- **input** (green) — *every* ancestor element the active step references (what it consumes);
+- **focus** (orange) — the one input whose pick is currently armed, drawn stronger.
+
+**Hover *preselection* was tried and dropped (decided).** A per-frame `ps.pick` at the cursor
+(viewport, while armed) plus dropdown-entry hover fed a pale-yellow candidate cue. In live use it
+*flickered* and *blocked the committing click*, and the static highlighting above already reads
+clearly — so it was reverted entirely (no `hover_preselect`, no `session["preselect"]`). The
+framework still accommodates it cheaply if ever revisited.
+
+Dispatch is table-driven throughout (no `if`-chains, mirroring `display.RENDERERS`): `render_kind
+→ geometry` (`GEOMETRY`), `element type → geometry` (`ELEMENTS`), schema `kind → field elements`
+(`FIELD_ELEMENTS`), `topology → register` (`RENDER`). A **single face/point** renders as a filled
+glow (lifted toward the camera so it neither z-fights nor is occluded); a **whole solid** renders
+as a wireframe outline, so many simultaneous highlights stay legible. Colours/sizes are tunable
+constants. **Edges** get a `GEOMETRY` entry when edge geometry actually renders (`op.edges`,
+deferred).
 
 ---
 
@@ -469,16 +525,13 @@ to the marker**, not the whole list.
     plain position list so it transforms rigidly — the curve binding lives in the clamp, not
     the sketch (the resolution of the transform problem). This is what lets a sketch vertex
     sit exactly on an on-curve point so the optimizer can clamp it.
-- **Selection (viewport → list)** — *implemented*. A bare viewport click selects the
-  structure; we mirror `ps.get_selection()` into `session["active"]` each frame
-  (`structure_name → model.step_by_name`, `::`-suffix stripped for sketch substructures),
-  synced only on change (the dedup key is `session["last_selection"]`). `sync_display`
-  calls `ps.reset_selection()` before `remove_all_structures()` so a stale selection can't
-  be resolved against a replaced structure (the bug that threw `interpretPickResult`); the
-  reader also guards + resets defensively. **An empty selection is treated as transient** —
-  `apply_selection` returns early on it *without* clearing `last_selection` (an empty
-  selection never changes `active` anyway). That last part is load-bearing for the pick fix
-  below.
+- **Selection is tool-scoped, not ambient (decided; the old viewport→list mirror is removed).**
+  A bare viewport click in normal mode selects nothing; `session["active"]` is set **only from
+  the step list**. There is no `sync_selection`/`session["select"]`/`last_selection` machinery
+  anymore — highlighting is driven from the active step by `cues` (see **Visual cues**), and
+  assigning an element to an input is the dropper/dropdown (below). `sync_display` still calls
+  `ps.reset_selection()` before `remove_all_structures()` (belt-and-braces: keeps Polyscope's
+  own click-selection from lingering across a rebuild).
 - **Pick a step to fill an input (the dropper)** — *implemented for points and `ref`
   fields*. Each input shows a `pick` button (eyedropper); clicking it toggles
   `session["pick"] = (step, field, index)` and shows a "Pick mode" hint. **A bare click
@@ -486,15 +539,12 @@ to the marker**, not the whole list.
   click resolves the picked structure to its step and binds it iff it is an *acceptable
   ancestor* — `picked in model.candidates(step, accepts)` (point inputs accept `Point`; a
   `ref` accepts its `accepts`), which enforces type *and* no-forward-reference. Pick mode
-  pauses selection and the sketcher so the click isn't double-handled.
-  - **Pick must not steal the edited selection (fixed).** The same click that fills a
-    field also drives Polyscope's own click-selection, which it commits a frame or two
-    *later* (on mouse release). So the dropper **pre-seeds** `session["last_selection"]`
-    with the structure it just consumed; when Polyscope's selection finally lands, the
-    mirror dedup absorbs it and the editor stays on the step being filled. This only works
-    because an empty selection no longer wipes `last_selection` (see Selection) — otherwise
-    a transient empty frame in the gap would reset the pre-seed. (A plain `reset_selection`
-    in the callback does *not* work: Polyscope re-commits after the callback runs.)
+  pauses the sketcher so the click isn't double-handled. `picker._resolve` turns a `PickResult`
+  into the bound element (a `FaceRef` for a `face`/`face_list` field, else the picked step) or
+  `None`; `handle_pick` → `_bind` stores it.
+  - **No steal-the-selection problem anymore.** With ambient selection removed, the dropper no
+    longer competes with a viewport→list mirror, so the old `last_selection` pre-seed is gone
+    (Polyscope's own click-selection is simply ignored, and reset on the next rebuild).
 - **Sweep-to-3D** *(Extrude, Revolve, Loft, Wedge done)* — an operation step referencing a
   profile; pick a Face for `Extrude.base`/`Loft`/`Revolve`/`Wedge` via the dropper. Revolve
   axis is a literal `point3`; origin is a reference-or-literal point. The Shape family
@@ -705,7 +755,12 @@ separation mechanically:
 - **UI shell** — own resizable window; width-filling inputs; enlarged point spheres.
 - **Palette order** — follows `CATALOG` insertion order, not alphabetical (the `sorted()`
   in the menu was removed; `CATALOG` is grouped + ordered to match this doc's palette).
-- **World-axes triad** — fixed origin gizmo (x/y/z = red/green/blue ambient vectors).
+- **World-axes triad** — origin gizmo (x/y/z = red/green/blue ambient vectors), sized to the
+  pinned scene so it stays legible and stops resizing.
+- **Scene environment** — own the extents: `pin_scene` disables Polyscope's per-rebuild auto-fit
+  (fixed world + `shadow_only` ground, no more lurching/collapsing); `fit_view` (`model_bounds`)
+  frames the model **once at startup**, and manual re-fit uses Polyscope's own view controls.
+  `geometry_of` is the shared `render_kind → geometry` table (renderers + cues + fit).
 - **More operations** — `Revolve`, `Loft`, `Wedge` (pure `ProducingStep` declarations,
   all `"operation"` render).
 - **Expression inputs** — `float`/`int` fields are math-expression strings (`pi/2`,
@@ -759,8 +814,10 @@ separation mechanically:
    not a standalone array step. See the `Transform` table row.
 9. **Edges / projections** — to discuss; the Points-file curve is the foundation (edges on
    faces, projection targets).
-10. **List → viewport highlight** — the reverse of selection (needs our own highlight,
-    since Polyscope has no `set_selection`).
+10. **List → viewport highlight** — *done as part of **Visual cues***. Selecting a step in the
+    list highlights its output (calm-blue outline) and every input it references (green) in the
+    viewport; `view/cues.py` sources all highlights from the active step. (Polyscope has no
+    `set_selection`, so this is our own overlay, not its selection.)
 
 **Deferred (decided):** palette categorization polish, the transform **gizmo** (numeric
 translate/rotate/scale/copy done; patterned multi-copy is left to **Stacks**, not a standalone
@@ -770,6 +827,15 @@ tried and **reverted** (an arrow-rendered point) — a proper `Axis` belongs in 
 core; reference-point + literal axis covers the vast majority. `QuarterDisk`/`Annulus`/full
 `Sphere` are absent only because classy_blocks doesn't export them at top level (one-line cb
 export to add).
+
+**Axis cue (implemented).** A cosmetic overlay, *not* a new reference type: a step declares
+`AXIS = (origin_field, direction_field)` (a base `Step` class attr, default `None`) and its
+active-step cue then draws that axis as a **point-and-vector arrow** — the origin (resolved via
+the build's `resolve_value`, so a literal or a `Point` ref both work) plus the `point3` direction,
+rendered with the **same** scene-scaled ambient vector-quantity the world triad uses
+(`display.axis_vectors`, shared). It rides the existing cue machinery (an `("axis", step)` element,
+a `RENDER["axis"]` entry, magenta), so it clears/scales like any other highlight. Declared on
+`Revolve` and `Rotate`; any origin+direction step opts in with one line.
 
 **Step palette contents** (✓ = implemented)
 

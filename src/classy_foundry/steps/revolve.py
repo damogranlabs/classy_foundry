@@ -6,7 +6,7 @@ so it may reference a Point step.
 """
 
 from .base import ProducingStep
-from .face import Face
+from .face import FaceStep
 
 
 class Revolve(ProducingStep):
@@ -16,8 +16,9 @@ class Revolve(ProducingStep):
     category = ("Solids", "Simple")
     label = "Revolve"
     render_kind = "operation"
+    AXIS = ("origin", "axis")  # draw the revolve axis as a point-and-vector cue
     SCHEMA = {
-        "base": {"kind": "ref", "label": "Profile", "default": None, "accepts": Face},
+        "base": {"kind": "ref", "label": "Profile", "default": None, "accepts": FaceStep},
         "angle": {"kind": "float", "label": "Angle (rad)", "default": "pi/2"},
         "axis": {"kind": "point3", "label": "Axis", "default": [0.0, 0.0, 1.0]},
         "origin": {"kind": "point", "label": "Origin", "default": [0.0, 0.0, 0.0]},

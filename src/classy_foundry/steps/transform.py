@@ -58,6 +58,7 @@ class Rotate(TransformStep):
     cb_method = "rotate"
     default_name = "rotate"
     label = "Rotate"
+    AXIS = ("origin", "axis")  # draw the rotation axis as a point-and-vector cue
     SCHEMA = {
         "target": _TARGET,
         "angle": {"kind": "float", "label": "Angle (rad)", "default": "pi/2"},

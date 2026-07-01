@@ -6,7 +6,7 @@ that axis. Angle is in radians (default ~2 deg).
 """
 
 from .base import ProducingStep
-from .face import Face
+from .face import FaceStep
 
 
 class Wedge(ProducingStep):
@@ -17,6 +17,6 @@ class Wedge(ProducingStep):
     label = "Wedge"
     render_kind = "operation"
     SCHEMA = {
-        "face": {"kind": "ref", "label": "Profile", "default": None, "accepts": Face},
+        "face": {"kind": "ref", "label": "Profile", "default": None, "accepts": FaceStep},
         "angle": {"kind": "float", "label": "Angle (rad)", "default": "deg2rad(2)"},
     }

@@ -35,6 +35,12 @@ def _quad_mesh(point_arrays):
     return np.asarray(vertices), np.asarray(faces)
 
 
+def element_quads(value):
+    """The side-quad point-arrays of every operation in a solid (bare op or multi-op shape).
+    Shared with the cue overlay so a highlighted solid derives from the same geometry."""
+    return [op.get_face(side).point_array for op in operations_of(value) for side in SIDES]
+
+
 def _render_element(step, context):
     """Any solid — operation, shape, or a copy of either — as the side quads of all its
     operations. `operations_of` unifies the single-op (a bare operation) and multi-op (a
@@ -42,8 +48,7 @@ def _render_element(step, context):
     value = context.get(step)
     if value is None:
         return
-    arrays = [op.get_face(side).point_array for op in operations_of(value) for side in SIDES]
-    ps.register_surface_mesh(step.name, *_quad_mesh(arrays))
+    ps.register_surface_mesh(step.name, *_quad_mesh(element_quads(value)))
 
 
 def _render_sketch(step, context):
@@ -114,14 +119,98 @@ RENDERERS = {
 }
 
 
+GEOMETRY = {  # render_kind -> (step, value) -> (topology, data); the geometry behind each renderer
+    "operation": lambda s, v: ("quad", element_quads(v)),
+    "shape": lambda s, v: ("quad", element_quads(v)),
+    "element": lambda s, v: ("quad", element_quads(v)),
+    "face": lambda s, v: ("quad", [v.point_array]),
+    "sketch_faces": lambda s, v: ("quad", [f.point_array for f in v.faces]),
+    "point": lambda s, v: ("cloud", [v]),
+    "curve": lambda s, v: ("curve", v.discretize(count=CURVE_SAMPLES)),
+    "sketch": lambda s, v: ("cloud", s.positions or None),  # raw points (may be in-progress)
+}
+
+
+def geometry_of(step, value):
+    """(topology, data) for a step's output — the geometry the cue overlay and scene-fit share
+    with the renderers, keyed by the same `render_kind`. None if the kind draws nothing."""
+    extract = GEOMETRY.get(step.render_kind)
+    return extract(step, value) if extract else None
+
+
+_BOUND_POINTS = {  # topology -> the (-1, 3) coordinates that geometry contributes to a fit
+    "quad": lambda data: np.vstack([np.asarray(a, float).reshape(-1, 3) for a in data]),
+    "cloud": lambda data: np.asarray(data, float).reshape(-1, 3),
+    "curve": lambda data: np.asarray(data, float).reshape(-1, 3),
+}
+
+
+def model_bounds(model, upto=None):
+    """Axis-aligned (low, high) over all built model geometry, or None if nothing is built.
+    Excludes the triad/cue overlays, so a fit frames the model itself with no feedback loop."""
+    context = model.build(upto)
+    coords = []
+    for step in model.prefix(upto):
+        value = context.get(step)
+        if value is None:
+            continue
+        geometry = geometry_of(step, value)
+        if geometry is None or geometry[1] is None:
+            continue
+        topology, data = geometry
+        extract = _BOUND_POINTS.get(topology)
+        if extract is not None and len(data):
+            coords.append(extract(data))
+    if not coords:
+        return None
+    points = np.vstack(coords)
+    low, high = points.min(axis=0), points.max(axis=0)
+    if float(np.linalg.norm(high - low)) < 1e-9:  # a single point: give it a unit box
+        low, high = low - 1.0, high + 1.0
+    return low, high
+
+
+DEFAULT_BOUNDS = (np.array([-1.0, -1.0, -1.0]), np.array([1.0, 1.0, 1.0]))
+
+
+def pin_scene():
+    """Take control of the scene extents so Polyscope stops re-fitting to the data on every
+    rebuild — which made the triad/ground/camera scale lurch as geometry changed and collapse
+    when empty. Pins a fixed default world and a quiet, grid-free shadow ground; `fit_view`
+    re-pins to the model on demand (the Fit action)."""
+    ps.set_automatically_compute_scene_extents(False)
+    ps.set_bounding_box(*DEFAULT_BOUNDS)
+    ps.set_length_scale(float(np.linalg.norm(DEFAULT_BOUNDS[1] - DEFAULT_BOUNDS[0])))
+    ps.set_ground_plane_mode("shadow_only")
+
+
+def fit_view(model, upto=None):
+    """The Fit action: re-pin the world to the current model's bounds and reframe the camera.
+    A no-op on an empty model, so the world can never collapse to nothing."""
+    bounds = model_bounds(model, upto)
+    if bounds is None:
+        return
+    low, high = bounds
+    ps.set_bounding_box(low, high)
+    ps.set_length_scale(float(np.linalg.norm(high - low)))
+    ps.reset_camera_to_home_view()
+
+
+def axis_vectors(cloud, arrows):
+    """Attach true-length (`ambient`) direction arrows to a one-point cloud, scaled to the
+    pinned scene — the shared triad/axis primitive. `arrows` = [(name, unit_dir, colour), …]."""
+    length = 0.5 * ps.get_length_scale()
+    for name, direction, colour in arrows:
+        cloud.add_vector_quantity(name, np.asarray([direction], float) * length,
+                                  vectortype="ambient", enabled=True, color=colour)
+
+
 def _render_axes():
-    """A fixed world-origin triad (x=red, y=green, z=blue) so axes/orientation are legible.
-    Model-independent, so re-added on every rebuild rather than living in the overlay slot."""
+    """A world-origin triad (x=red, y=green, z=blue), sized to the pinned scene so it stays
+    legible on any model and stops resizing as geometry is added/removed (see `pin_scene`)."""
     cloud = ps.register_point_cloud(AXES_NAME, np.zeros((1, 3)))
     cloud.set_radius(POINT_RADIUS)
-    for axis, colour in AXES:
-        cloud.add_vector_quantity(axis, np.asarray([colour], float), vectortype="ambient",
-                                  enabled=True, color=colour)
+    axis_vectors(cloud, [(axis, colour, colour) for axis, colour in AXES])  # colour = unit dir
 
 
 def sync_display(model, overlay=None, upto=None, optimize=False):
@@ -136,3 +225,4 @@ def sync_display(model, overlay=None, upto=None, optimize=False):
         RENDERERS.get(step.render_kind, _render_nothing)(step, context)
     if overlay is not None:
         overlay()
+    return context  # stashed by the caller so cues can resolve element geometry between rebuilds

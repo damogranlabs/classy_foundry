@@ -29,6 +29,23 @@ def _accepts(step, field):
     return PointStep if spec["kind"] in ("point", "point_list") else spec.get("accepts")
 
 
+def _resolve(model, target, result):
+    """The element a pick `result` binds to for `target` = (step, field, index): a `FaceRef`
+    for a `face`/`face_list` field, else the picked step — or None if the hit isn't an
+    acceptable ancestor (type + no-forward-reference, via `model.candidates`) or, for a face
+    field, isn't a face. Shared by the click (`handle_pick`) and the hover preview."""
+    step, field, _ = target
+    picked = model.step_by_name(result.structure_name.split("::")[0]) if result.is_hit else None
+    if picked is None or picked not in model.candidates(step, _accepts(step, field)):
+        return None
+    if step.SCHEMA[field]["kind"] not in ("face", "face_list"):
+        return picked
+    data = result.structure_data
+    if data.get("element_type") != "face" or data.get("index") is None:
+        return None
+    return FaceRef(picked, data["index"])
+
+
 def handle_pick(model, session):
     """Resolve an armed pick against the next viewport click; return True if bound.
 
@@ -43,32 +60,19 @@ def handle_pick(model, session):
     kind = step.SCHEMA[field]["kind"]
     if kind != "face_list":  # only a face_list keeps picking; everything else is single-shot
         session["pick"] = None
-
-    result = ps.pick(screen_coords=psim.GetMousePos())
-    # The same click also drives Polyscope's own selection (set after this callback, so a
-    # reset here won't stick). Record it as already-seen so the selection mirror won't move
-    # the editor off the step being filled onto the picked one.
-    session["last_selection"] = result.structure_name if result.is_hit else None
-    picked = model.step_by_name(result.structure_name.split("::")[0]) if result.is_hit else None
-    if picked is None or picked not in model.candidates(step, _accepts(step, field)):
+    element = _resolve(model, target, ps.pick(screen_coords=psim.GetMousePos()))
+    if element is None:
         return False
+    _bind(step, field, index, kind, element)
+    return True
 
+
+def _bind(step, field, index, kind, element):
+    """Store the resolved `element` in the field: append for a `face_list`, assign for a
+    single `face`/`ref`, or replace one entry of a `point_list`."""
     if kind == "face_list":
-        return _pick_face(picked, result, step.values[field].append)
-    if kind == "face":
-        return _pick_face(picked, result, lambda ref: step.values.__setitem__(field, ref))
-    if index is None:
-        step.values[field] = picked
-    else:
-        step.values[field][index] = picked
-    return True
-
-
-def _pick_face(picked, result, place):
-    """Hand a `FaceRef` for the hit face to `place` (append for a list, assign for one). A
-    non-face hit (a vertex/edge) is ignored, so the user keeps clicking until a face lands."""
-    data = result.structure_data
-    if data.get("element_type") != "face" or data.get("index") is None:
-        return False
-    place(FaceRef(picked, data["index"]))
-    return True
+        step.values[field].append(element)
+    elif kind in ("face", "ref", "point"):
+        step.values[field] = element
+    else:  # point_list entry
+        step.values[field][index] = element

@@ -10,7 +10,7 @@ written (deferred).
 """
 
 from .base import ProducingStep
-from .face import Face
+from .face import FaceStep
 from .sketches import SketchStep
 
 
@@ -120,7 +120,7 @@ class RevolvedRing(CatalogueShape):
     SCHEMA = {
         "axis_point_1": {"kind": "point", "label": "Axis start", "default": [0.0, 0.0, 0.0]},
         "axis_point_2": {"kind": "point", "label": "Axis end", "default": [0.0, 0.0, 1.0]},
-        "cross_section": {"kind": "ref", "label": "Cross-section", "default": None, "accepts": Face},
+        "cross_section": {"kind": "ref", "label": "Cross-section", "default": None, "accepts": FaceStep},
     }
 
 
