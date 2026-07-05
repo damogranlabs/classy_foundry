@@ -9,6 +9,7 @@ from .box import Box
 from .chop import Chop
 from .connector import Connector
 from .curve import PointsFileCurve
+from .edge import AngleEdge, ArcEdge, OnCurveEdge, OriginEdge, ProjectEdge
 from .extrude import Extrude
 from .face import ExtractFace, Face
 from .graders import FixedCount, Inflation, Simple
@@ -95,6 +96,12 @@ CATALOG = [
     CurveClamp,
     # Optimizers (run)
     Optimize,
+    # Edges
+    ArcEdge,
+    OriginEdge,
+    AngleEdge,
+    ProjectEdge,
+    OnCurveEdge,
     # Grading
     Chop,
     # Grading / Automatic

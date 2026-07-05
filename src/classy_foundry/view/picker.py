@@ -18,10 +18,19 @@ face, connect two).
 import polyscope as ps
 import polyscope.imgui as psim
 
-from ..steps.faces import FaceRef
+from ..steps.faces import EdgeRef, FaceRef
 from ..steps.point import PointStep
 
 LEFT_MOUSE = 0
+
+# A pick field's kind -> (the picked element_type it accepts, the ref class built from the hit).
+# A face/edge pick reads the same `data["index"]` (a flat per-operation index); the class turns
+# it into a lazily-resolving reference. Adding a pickable element = one entry here.
+PICK_REFS = {
+    "face": ("face", FaceRef),
+    "face_list": ("face", FaceRef),
+    "edge": ("edge", EdgeRef),
+}
 
 
 def _accepts(step, field):
@@ -38,12 +47,14 @@ def _resolve(model, target, result):
     picked = model.step_by_name(result.structure_name.split("::")[0]) if result.is_hit else None
     if picked is None or picked not in model.candidates(step, _accepts(step, field)):
         return None
-    if step.SCHEMA[field]["kind"] not in ("face", "face_list"):
+    ref = PICK_REFS.get(step.SCHEMA[field]["kind"])
+    if ref is None:
         return picked
+    element_type, ref_cls = ref
     data = result.structure_data
-    if data.get("element_type") != "face" or data.get("index") is None:
+    if data.get("element_type") != element_type or data.get("index") is None:
         return None
-    return FaceRef(picked, data["index"])
+    return ref_cls(picked, data["index"])
 
 
 def handle_pick(model, session):
@@ -72,7 +83,7 @@ def _bind(step, field, index, kind, element):
     single `face`/`ref`, or replace one entry of a `point_list`."""
     if kind == "face_list":
         step.values[field].append(element)
-    elif kind in ("face", "ref", "point"):
+    elif kind in ("face", "edge", "ref", "point"):
         step.values[field] = element
     else:  # point_list entry
         step.values[field][index] = element

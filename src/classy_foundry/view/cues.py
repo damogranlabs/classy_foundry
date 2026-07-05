@@ -26,9 +26,9 @@ import numpy as np
 import polyscope as ps
 
 from ..steps.base import resolve_value
-from ..steps.faces import FaceRef, SIDES, operations_of
+from ..steps.faces import EdgeRef, FaceRef, operations_of
 from ..steps.point import PointStep
-from .display import POINT_RADIUS, _quad_mesh, axis_vectors, geometry_of
+from .display import POINT_RADIUS, _quad_mesh, axis_vectors, geometry_of, operation_corners
 
 PREFIX = "cue "  # trailing space => reserved: never a step name / selection
 
@@ -55,8 +55,17 @@ def _face_geometry(face_ref, context):
     value = context.get(face_ref.step)
     if value is None:
         return None
-    op = operations_of(value)[face_ref.index // 6]
-    return "quad", [op.get_face(SIDES[face_ref.index % 6]).point_array]
+    op = operations_of(value)[face_ref.op_index]
+    return "quad", [op.get_face(face_ref.side()).point_array]
+
+
+def _edge_geometry(edge_ref, context):
+    value = context.get(edge_ref.step)
+    if value is None:
+        return None
+    corners = operation_corners(operations_of(value)[edge_ref.op_index])
+    corner_1, corner_2 = edge_ref.corners()
+    return "curve", [corners[corner_1], corners[corner_2]]
 
 
 def _axis_geometry(step, context):
@@ -81,6 +90,7 @@ _TUPLE = {  # a tuple element is (tag, …): a literal point, or an axis carried
 
 ELEMENTS = {
     FaceRef: _face_geometry,
+    EdgeRef: _edge_geometry,
     PointStep: _step_geometry,
     tuple: lambda element, context: _TUPLE[element[0]](element, context),
 }
@@ -108,6 +118,7 @@ FIELD_ELEMENTS = {  # schema kind -> field value -> [element, …]
     "point_list": _point_elements,
     "face": lambda v: [v] if v is not None else [],
     "face_list": list,
+    "edge": lambda v: [v] if v is not None else [],
 }
 
 

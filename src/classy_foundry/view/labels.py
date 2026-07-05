@@ -41,3 +41,31 @@ def draw_labels(entries, color):
     for (x, y), (_, text) in zip(screen, entries):
         if not np.isnan(x):
             draw.AddText((float(x), float(y)), packed, text)
+
+
+GLYPH_PITCH = 10.0  # px between successive glyphs in a cluster
+EDGE_NUDGE = 12.0   # px the cluster sits off the edge line, so it never covers the pickable curve
+
+
+def draw_clusters(clusters):
+    """Draw a small row of glyphs at each edge. `clusters` = [(p_start, p_end, glyphs), …] with
+    `glyphs` = [(text, rgb), …]; a cluster's row is centred on the edge midpoint, laid out along
+    the edge's screen direction and nudged perpendicular so it sits beside the edge, not on it.
+    A cluster whose edge is at/behind the camera is skipped (its endpoints project to NaN)."""
+    flat = [point for start, end, _ in clusters for point in (start, end)]
+    if not flat:
+        return
+    screen = _world_to_screen(flat)
+    draw = psim.GetForegroundDrawList()
+    for i, (_, _, glyphs) in enumerate(clusters):
+        start, end = screen[2 * i], screen[2 * i + 1]
+        if not glyphs or np.isnan(start[0]) or np.isnan(end[0]):
+            continue
+        along = end - start
+        length = float(np.hypot(*along))
+        along = along / length if length else np.array([1.0, 0.0])
+        normal = np.array([-along[1], along[0]])
+        origin = (start + end) / 2 + normal * EDGE_NUDGE - along * (GLYPH_PITCH * (len(glyphs) - 1) / 2)
+        for j, (text, rgb) in enumerate(glyphs):
+            x, y = origin + along * (GLYPH_PITCH * j)
+            draw.AddText((float(x), float(y)), psim.IM_COL32(*(int(255 * c) for c in rgb), 255), text)

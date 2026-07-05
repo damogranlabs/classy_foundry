@@ -41,6 +41,13 @@ def element_quads(value):
     return [op.get_face(side).point_array for op in operations_of(value) for side in SIDES]
 
 
+def operation_corners(op):
+    """An operation's eight corner positions in classy_blocks' corner order (bottom face 0-3,
+    top face 4-7) — the vertices its twelve block edges connect. Shared by the edge overlay and
+    the cue highlight so both address edges by the same corner indices as `add_edge`."""
+    return np.vstack([op.bottom_face.point_array, op.top_face.point_array])
+
+
 def _render_element(step, context):
     """Any solid — operation, shape, or a copy of either — as the side quads of all its
     operations. `operations_of` unifies the single-op (a bare operation) and multi-op (a

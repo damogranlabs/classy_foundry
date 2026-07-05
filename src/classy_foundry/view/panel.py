@@ -177,6 +177,36 @@ def _face_field(step, field, spec, model, session):
     return changed
 
 
+def _edge_label(edge):
+    """Human-readable id of a picked edge: 'cylinder · op2 · edge 5 (1-2)' (a shape addresses its
+    sub-operation) or 'box · edge 5 (1-2)' (a bare operation)."""
+    op = f" · op{edge.op_index}" if edge.step.render_kind == "shape" else ""
+    corner_1, corner_2 = edge.corners()
+    return f"{edge.step.name}{op} · edge {edge.local} ({corner_1}-{corner_2})"
+
+
+def _edge_field(step, field, spec, model, session):
+    """A single picked edge: a toggle that arms a one-shot viewport pick (see picker), then shows
+    the edge it landed on. Re-picking replaces it; 'x' clears it. Mirrors `_face_field`."""
+    psim.PushID(field)
+    psim.TextUnformatted(spec["label"])
+    target = (step, field, None)
+    armed = session.get("pick") == target
+    current = step.values[field]
+    if psim.Button("stop picking" if armed else "pick edge"):
+        session["pick"] = None if armed else target
+    psim.SameLine()
+    psim.TextUnformatted(_edge_label(current) if current is not None else "<none>")
+    changed = False
+    if current is not None:
+        psim.SameLine()
+        if psim.SmallButton("x"):
+            step.values[field] = None
+            changed = True
+    psim.PopID()
+    return changed
+
+
 def _edit_field(step, field, spec, model, session):
     if spec["kind"] == "ref":
         return _ref_field(step, field, spec, model, session)
@@ -186,6 +216,8 @@ def _edit_field(step, field, spec, model, session):
         return _face_field(step, field, spec, model, session)
     if spec["kind"] == "face_list":
         return _face_list_field(step, field, spec, model, session)
+    if spec["kind"] == "edge":
+        return _edge_field(step, field, spec, model, session)
     psim.PushID(field)
     psim.TextUnformatted(spec["label"])
     psim.SetNextItemWidth(-1)
