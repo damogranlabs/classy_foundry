@@ -18,7 +18,7 @@ face, connect two).
 import polyscope as ps
 import polyscope.imgui as psim
 
-from ..steps.faces import EdgeRef, FaceRef
+from ..steps.faces import EdgeRef, FaceEdgeRef, FaceRef
 from ..steps.point import PointStep
 
 LEFT_MOUSE = 0
@@ -29,7 +29,8 @@ LEFT_MOUSE = 0
 PICK_REFS = {
     "face": ("face", FaceRef),
     "face_list": ("face", FaceRef),
-    "edge": ("edge", EdgeRef),
+    "edge": ("edge", EdgeRef),           # an operation's block edge
+    "face_edge": ("edge", FaceEdgeRef),  # a flat face's edge (same curve-net pick, different ref)
 }
 
 
@@ -83,7 +84,7 @@ def _bind(step, field, index, kind, element):
     single `face`/`ref`, or replace one entry of a `point_list`."""
     if kind == "face_list":
         step.values[field].append(element)
-    elif kind in ("face", "edge", "ref", "point"):
+    elif kind in ("face", "edge", "face_edge", "ref", "point"):
         step.values[field] = element
     else:  # point_list entry
         step.values[field][index] = element

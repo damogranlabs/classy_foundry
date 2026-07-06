@@ -31,6 +31,12 @@ def operations_of(value):
     return getattr(value, "operations", [value])
 
 
+def faces_of(value):
+    """The classy_blocks Faces behind a built flat value, uniformly: a sketch (mapped or a disk)
+    exposes them via `.faces`; a bare `Face` *is* its own single face."""
+    return getattr(value, "faces", [value])
+
+
 def is_face_source(step) -> bool:
     """A step whose faces/edges can be picked: any solid — operation, shape, or a copy of
     either (all render side quads)."""
@@ -101,6 +107,11 @@ class EdgeRef(SolidRef):
     def corners(self) -> tuple:
         return EDGE_PAIRS[self.local]
 
+    def describe(self) -> str:
+        op = f" · op{self.op_index}" if self.step.render_kind == "shape" else ""
+        corner_1, corner_2 = self.corners()
+        return f"{self.step.name}{op} · edge {self.local} ({corner_1}-{corner_2})"
+
     def add_edge_line(self, data_expr: str) -> str:
         corner_1, corner_2 = self.corners()
         return f"{self._operation_expr()}.add_edge({corner_1}, {corner_2}, {data_expr})"
@@ -112,3 +123,46 @@ class EdgeRef(SolidRef):
         if value is not None and self.op_index < len(operations_of(value)):
             corner_1, corner_2 = self.corners()
             operations_of(value)[self.op_index].add_edge(corner_1, corner_2, data)
+
+
+@dataclass
+class FaceEdgeRef:
+    """One picked edge of a flat face — a bare `Face` or one face of a sketch (mapped/disk).
+    `index` is `face * 4 + corner`; the edge spans `corner`→`corner+1`, via classy_blocks'
+    single-index `Face.add_edge(corner, data)`. `faces_of` unifies the single-face and multi-face
+    cases (like `operations_of` for solids); codegen addresses a sketch's face through `.faces[i]`
+    (a bare Face is `face 0`, addressed directly). No operations, no chops, so none of `SolidRef`'s
+    machinery — just `EdgeRef`'s `apply_edge`/`add_edge_line`/`describe` interface, so `EdgeStep`
+    treats every edge target alike."""
+
+    step: Step
+    index: int
+
+    @property
+    def face_index(self) -> int:
+        return self.index // 4
+
+    @property
+    def corner(self) -> int:
+        return self.index % 4
+
+    def corners(self) -> tuple:
+        return self.corner, (self.corner + 1) % 4
+
+    def _face_expr(self) -> str:
+        if self.step.render_kind == "face":
+            return self.step.name
+        return f"{self.step.name}.faces[{self.face_index}]"
+
+    def describe(self) -> str:
+        face = "" if self.step.render_kind == "face" else f" · face {self.face_index}"
+        return f"{self.step.name}{face} · edge {self.corner}"
+
+    def add_edge_line(self, data_expr: str) -> str:
+        return f"{self._face_expr()}.add_edge({self.corner}, {data_expr})"
+
+    def apply_edge(self, context, data) -> None:
+        """Set this edge's data on its live face. Silently skips a face that no longer built."""
+        value = context.get(self.step)
+        if value is not None and self.face_index < len(faces_of(value)):
+            faces_of(value)[self.face_index].add_edge(self.corner, data)

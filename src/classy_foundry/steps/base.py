@@ -160,6 +160,7 @@ REF_EXTRACT = {
     "face": lambda v: [v.step] if v is not None else [],
     "face_list": lambda v: [face.step for face in v],
     "edge": lambda v: [v.step] if v is not None else [],
+    "face_edge": lambda v: [v.step] if v is not None else [],
 }
 
 # kind -> stored value turned into a live cb argument at build time

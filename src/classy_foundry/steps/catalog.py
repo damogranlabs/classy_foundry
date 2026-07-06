@@ -9,7 +9,7 @@ from .box import Box
 from .chop import Chop
 from .connector import Connector
 from .curve import PointsFileCurve
-from .edge import AngleEdge, ArcEdge, OnCurveEdge, OriginEdge, ProjectEdge
+from .edge import FACE_EDGES, OPERATION_EDGES
 from .extrude import Extrude
 from .face import ExtractFace, Face
 from .graders import FixedCount, Inflation, Simple
@@ -55,6 +55,8 @@ CATALOG = [
     Face,
     ExtractFace,
     MappedSketch,
+    # Flat / Add edge
+    *FACE_EDGES,
     # Flat / Sketches catalogue
     HalfCircle,
     Circle,
@@ -96,12 +98,8 @@ CATALOG = [
     CurveClamp,
     # Optimizers (run)
     Optimize,
-    # Edges
-    ArcEdge,
-    OriginEdge,
-    AngleEdge,
-    ProjectEdge,
-    OnCurveEdge,
+    # Solids / Add edge
+    *OPERATION_EDGES,
     # Grading
     Chop,
     # Grading / Automatic
