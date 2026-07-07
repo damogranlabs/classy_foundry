@@ -5,9 +5,13 @@ the work plane), ps.pick (resolve an existing vertex by its world position), and
 tables -- no scene-graph code. Quad corners are picked by *world position* (depth-correct, so
 off-plane on-curve points select correctly and overlay markers resolve to their vertex), not
 by work-plane proximity. Placing a point is pick-based for reuse: a click on a reference
-point (`PointStep`) snapshots that point's exact position into the sketch (the sketch keeps
-plain positions, so it transforms rigidly — the curve binding lives in the clamp, not here);
-a click that misses every reference point drops a free point on the work plane.
+point (`PointStep`) stores a *reference* to it (the sketch vertex is that named point, so the
+sketch follows it and codegen names it, like a `Face` corner); a click that misses every
+reference point drops a free coordinate on the work plane. A stored entry is therefore a
+`PointStep` *or* an `[x, y, z]`, so every place the sketcher reads vertex coordinates goes
+through `sketch.resolved_positions(context)` (a ref → its built coordinate, a literal
+through); a ref can be *frozen* to a plain coordinate in the points table for the rigid-
+transform + clamp workflow.
 """
 
 import numpy as np
@@ -17,24 +21,30 @@ import polyscope.imgui as psim
 from ..geom import ray_plane_hit
 from ..steps.point import PointStep
 from . import labels
+from .display import POINT_RADIUS
 
 LEFT_MOUSE = 0
+
+# Pending/selected markers sit on the sketch points, so they're sized *relative* to the scene
+# (like every other radius) — a bit larger than the base point so the highlight envelops it. An
+# absolute radius here made them swallow a small model (blade-scale) and never rescale.
+MARKER_RADIUS = 1.5 * POINT_RADIUS
 
 POINT_LABEL_COLOR = (0.75, 0.9, 1.0)   # point indices — light blue
 BLOCK_LABEL_COLOR = (1.0, 0.85, 0.35)  # block (quad) indices — amber
 
 
-def draw_number_labels(sketch):
+def draw_number_labels(sketch, context):
     """Per-frame text overlay for the sketch being edited: the point index at each vertex and
     the block index at each quad centroid — so the tables' index-based editing (a quad is four
     point indices) reads directly off the viewport. Camera-dependent, so the app callback runs
-    it every frame; a quad referencing an out-of-range point is skipped mid-edit."""
-    if not sketch.positions:
-        return
-    positions = np.asarray(sketch.positions, float).reshape(-1, 3)
-    labels.draw_labels([(positions[i], str(i)) for i in range(len(positions))], POINT_LABEL_COLOR)
-    labels.draw_labels([(positions[quad].mean(axis=0), str(i))
-                        for i, quad in enumerate(sketch.quads) if quad and max(quad) < len(positions)],
+    it every frame. Vertex coordinates come from `resolved_positions` (an entry may be a point
+    ref); a vertex whose ref hasn't built (None), and a quad touching one, are skipped."""
+    coords = sketch.resolved_positions(context)
+    labels.draw_labels([(c, str(i)) for i, c in enumerate(coords) if c is not None], POINT_LABEL_COLOR)
+    labels.draw_labels([(np.asarray([coords[c] for c in quad], float).mean(axis=0), str(i))
+                        for i, quad in enumerate(sketch.quads)
+                        if quad and max(quad) < len(coords) and all(coords[c] is not None for c in quad)],
                        BLOCK_LABEL_COLOR)
 
 # The Points/Quads tables share a layout: a narrow index column, a *stretching* values column
@@ -61,22 +71,22 @@ class SketchEditor:
     def handle_click(self, model):
         """Process a left click in the viewport; return True if anything changed.
 
-        Point mode adds a point — snapshotting an existing reference point if the click
-        landed on one, else a free point on the work plane; quad mode connects the *nearest
-        existing point* (no new points), so quads are built by clicking roughly at corners.
+        Point mode adds a point — a *reference* to the reference point the click hit, else a
+        free coordinate on the work plane; quad mode connects the *nearest existing vertex* (no
+        new points), so quads are built by clicking roughly at corners.
         """
         if not self._armed():
             return False
         screen = psim.GetMousePos()
         if self.mode == "point":
             return self._place_point(screen, model)
-        return self._extend_quad(screen)
+        return self._extend_quad(screen, model.build())
 
     def _place_point(self, screen, model):
-        """Add a point: snapshot a reference point if the click hit one, else drop a free
-        point on the work plane. (Snapshot, not a live ref — the sketch stays a plain
-        position list so transforms stay rigid; the curve binding lives in the clamp.)"""
-        ref = self._picked_reference_position(screen, model)
+        """Add a point: store a *reference* to the reference point the click hit (the sketch
+        vertex follows that named point and codegen names it), else drop a free coordinate on
+        the work plane."""
+        ref = self._picked_reference(screen, model)
         if ref is not None:
             self._append(ref)
             return True
@@ -86,7 +96,7 @@ class SketchEditor:
         self._append(list(hit))
         return True
 
-    def _extend_quad(self, screen):
+    def _extend_quad(self, screen, context):
         """Add the clicked sketch vertex to the in-progress quad. Resolved by the pick's
         *world position* (depth-correct), not the work-plane intersection — so an off-plane
         on-curve point selects correctly instead of its plane-parallax neighbour, and an
@@ -95,7 +105,7 @@ class SketchEditor:
         result = ps.pick(screen_coords=screen)
         if not result.is_hit:
             return False
-        index = self._closest(np.asarray(result.position, float))
+        index = self._closest(np.asarray(result.position, float), context)
         if index is None:
             return False  # no existing points to connect
         self.pending.append(index)
@@ -104,18 +114,15 @@ class SketchEditor:
             self.pending = []
         return True
 
-    def _picked_reference_position(self, screen, model):
-        """Exact world position of a reference point (`PointStep`) under the click, or None
-        if the click missed every reference point. Resolves the picked step's built value, so
-        an on-curve point snaps to its precise `curve.get_point(param)`."""
+    def _picked_reference(self, screen, model):
+        """The reference-point step (`PointStep`) under the click, or None if the click missed
+        every reference point. The step itself is stored (a live ref), resolved to coordinates
+        only for display/build."""
         result = ps.pick(screen_coords=screen)
         if not result.is_hit:
             return None
         step = model.step_by_name(result.structure_name.split("::")[0])
-        if not isinstance(step, PointStep):
-            return None
-        value = model.build().get(step)
-        return None if value is None else list(np.asarray(value, float).ravel())
+        return step if isinstance(step, PointStep) else None
 
     def _armed(self):
         return (self.sketch is not None and self.mode is not None
@@ -127,27 +134,31 @@ class SketchEditor:
         return ray_plane_hit(camera.get_position(), ps.screen_coords_to_world_ray(screen),
                              self.sketch.work_origin, self.sketch.work_normal)
 
-    def _closest(self, point):
-        """Index of the existing point nearest to `point`, or None if there are none."""
-        if not self.sketch.positions:
+    def _closest(self, point, context):
+        """Index of the existing vertex nearest `point`, resolving ref entries via `context` and
+        skipping any that haven't built; None if there is nothing resolvable to connect."""
+        coords = self.sketch.resolved_positions(context)
+        candidates = [(i, np.asarray(c)) for i, c in enumerate(coords) if c is not None]
+        if not candidates:
             return None
         target = np.asarray(point)
-        return min(range(len(self.sketch.positions)),
-                   key=lambda i: float(np.linalg.norm(target - np.asarray(self.sketch.positions[i]))))
+        return min(candidates, key=lambda ic: float(np.linalg.norm(target - ic[1])))[0]
 
-    def _append(self, hit):
-        self.sketch.positions.append(list(hit))
+    def _append(self, entry):
+        """Append a stored vertex — a `PointStep` reference or an `[x, y, z]` literal, kept as-is."""
+        self.sketch.positions.append(entry)
         return len(self.sketch.positions) - 1
 
     # ---------- transient overlay ----------
 
-    def render_overlay(self):
+    def render_overlay(self, context):
         if self.sketch is None:
             return
-        valid = len(self.sketch.positions)
-        self._marker("::pending", [self.sketch.positions[i] for i in self.pending if i < valid], (1.0, 1.0, 0.0))
-        chosen = [self.sketch.positions[self.selected]] if self._has_selection() else []
-        self._marker("::selected", chosen, (1.0, 0.4, 0.0))
+        coords = self.sketch.resolved_positions(context)  # ref vertices -> coordinates
+        pending = [coords[i] for i in self.pending if i < len(coords) and coords[i] is not None]
+        self._marker("::pending", pending, (1.0, 1.0, 0.0))
+        selected = coords[self.selected] if self._has_selection() else None
+        self._marker("::selected", [selected] if selected is not None else [], (1.0, 0.4, 0.0))
 
     def _has_selection(self):
         return self.selected is not None and self.selected < len(self.sketch.positions)
@@ -159,14 +170,15 @@ class SketchEditor:
             return
         cloud = ps.register_point_cloud(name, np.asarray(points, float).reshape(-1, 3))
         cloud.set_color(color)
-        cloud.set_radius(0.015, relative=False)
+        cloud.set_radius(MARKER_RADIUS)  # relative -> scales with the model, like the base points
 
     # ---------- panel ----------
 
-    def draw(self):
+    def draw(self, context):
         """A Points section (Add point + table) and a Quads section (Add quad + table), each
-        with its own add-mode toggle, then a trailing Done. Returns True if geometry changed."""
-        dirty = self._section("Points", "Add point", "point", self._points_table)
+        with its own add-mode toggle, then a trailing Done. Returns True if geometry changed.
+        `context` resolves ref-valued vertices for the points table (name + freeze)."""
+        dirty = self._section("Points", "Add point", "point", lambda: self._points_table(context))
         dirty |= self._section("Quads", f"Add quad ({len(self.pending)}/4)", "quad", self._quads_table)
         dirty |= self._mode_button("Done", None)  # leaves add-mode; sits below both tables
         return dirty
@@ -195,29 +207,43 @@ class SketchEditor:
         psim.TableSetupColumn("x", psim.ImGuiTableColumnFlags_WidthFixed, DELETE_WIDTH)
         return True
 
-    def _points_table(self):
+    def _points_table(self, context):
         dirty = False
         delete = None
         if not self._begin_grid_table("points"):
             return False
-        for i, position in enumerate(self.sketch.positions):
+        coords = self.sketch.resolved_positions(context)
+        for i, entry in enumerate(self.sketch.positions):
             psim.PushID(i)
             psim.TableNextRow()
             psim.TableNextColumn()
             if psim.Selectable(str(i), self.selected == i):
                 self.selected = i
             psim.TableNextColumn()
-            psim.SetNextItemWidth(-1)
-            changed, new = psim.InputFloat3("", position)
-            if changed:
-                self.sketch.positions[i] = list(new)
-                dirty = True
+            dirty |= self._point_cell(i, entry, coords[i])  # a referenced point, or editable xyz
             psim.TableNextColumn()
             if psim.SmallButton("x"):
                 delete = i
             psim.PopID()
         psim.EndTable()
         return self._delete_point(delete) or dirty
+
+    def _point_cell(self, i, entry, coord):
+        """The values cell of one point row: a *referenced* vertex shows its point name plus a
+        'freeze' button (replace the reference with its current coordinate — the rigid-transform +
+        clamp workflow); a literal vertex shows editable xyz. Returns True if it changed."""
+        if isinstance(entry, PointStep):
+            psim.TextUnformatted(entry.name)
+            psim.SameLine()
+            if psim.SmallButton("freeze") and coord is not None:
+                self.sketch.positions[i] = list(coord)
+                return True
+            return False
+        psim.SetNextItemWidth(-1)
+        changed, new = psim.InputFloat3("", entry)
+        if changed:
+            self.sketch.positions[i] = list(new)
+        return changed
 
     def _delete_point(self, index):
         if index is None or self._referenced(index):

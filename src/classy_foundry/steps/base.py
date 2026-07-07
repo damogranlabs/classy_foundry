@@ -91,6 +91,7 @@ class BuildContext(dict):
     def __init__(self, optimize: bool = False):
         super().__init__()
         self.optimize = optimize
+        self.errors: dict = {}  # step -> the exception that stopped its build; surfaced in the panel
 
 
 class Step:

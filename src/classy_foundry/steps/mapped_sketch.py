@@ -6,7 +6,21 @@ work plane (origin + normal) is GUI-only metadata for placing viewport clicks â€
 constructor argument, so it lives outside `SCHEMA` but is still pickled.
 """
 
+import numpy as np
+
+from .base import _is_ref
 from .sketches import SketchStep
+
+
+def _resolved_coord(entry, context):
+    """One `positions` entry -> an `[x, y, z]` (or None): a point *reference* resolves through the
+    build `context` (so a sketch vertex follows the point it names); a literal passes through; a
+    reference whose ancestor hasn't built yields None, so display callers can skip it while the rest
+    of the sketch still shows."""
+    if not _is_ref(entry):
+        return [float(x) for x in entry]
+    value = context.get(entry) if context is not None else None
+    return None if value is None else [float(x) for x in np.asarray(value).ravel()]
 
 
 class MappedSketch(SketchStep):
@@ -32,3 +46,9 @@ class MappedSketch(SketchStep):
     @property
     def quads(self):
         return self.values["quads"]
+
+    def resolved_positions(self, context):
+        """The stored entries as `[x, y, z]` coordinates (None for a reference that hasn't built),
+        index-aligned with `positions`/`quads` â€” the display's single source of vertex coordinates
+        now that an entry may be a point reference, not just a literal."""
+        return [_resolved_coord(entry, context) for entry in self.positions]
