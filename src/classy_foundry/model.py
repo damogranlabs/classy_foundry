@@ -143,10 +143,20 @@ class Model:
         lines.append(f"mesh.write({blockmesh_path!r})")
         return "\n".join(lines) + "\n"
 
-    def save(self, path):
+    def save(self, path, scene=None):
+        """Pickle the document: the step list plus an **opaque** `scene` blob the view supplies
+        (Polyscope camera/slice-plane state — see `view/scene.py`). `scene` is stored verbatim
+        and never interpreted here, so `model` stays free of any `polyscope` dependency."""
         with open(path, "wb") as file:
-            pickle.dump(self.steps, file)
+            pickle.dump({"steps": self.steps, "scene": scene}, file)
 
     def load(self, path):
+        """Load the step list; return the opaque `scene` blob saved alongside it (or `None`,
+        including for legacy pickles that were a bare step list)."""
         with open(path, "rb") as file:
-            self.steps = pickle.load(file)
+            data = pickle.load(file)
+        if isinstance(data, dict):
+            self.steps = data["steps"]
+            return data.get("scene")
+        self.steps = data  # legacy pickle: a bare step list, no scene
+        return None

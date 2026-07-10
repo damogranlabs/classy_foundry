@@ -44,13 +44,38 @@ _EXPR_NAMES = (
 EXPR_NAMESPACE = {name: getattr(numpy, name) for name in _EXPR_NAMES}
 
 
-def eval_expr(value):
-    """Evaluate a numeric field's expression string; pass numbers through unchanged
-    (defaults / legacy pickles). Raises on a bad expression, so a mid-edit step just
-    fails to build (best-effort) until it parses again."""
+def _namespace(params=None):
+    return {**EXPR_NAMESPACE, **params} if params else EXPR_NAMESPACE
+
+
+def eval_expr(value, params=None):
+    """Evaluate a numeric field's expression string in the math namespace plus any user
+    `params` (Parameter steps defined above the current one), so a field can read `bore/2`
+    as naturally as `pi/2`. Numbers pass through unchanged (defaults / legacy pickles). Raises
+    on a bad expression, so a mid-edit step just fails to build (best-effort) until it parses
+    again — the same leniency that also covers a not-yet-defined parameter name."""
     if isinstance(value, (int, float)):
         return float(value)
-    return float(eval(value, {"__builtins__": {}}, EXPR_NAMESPACE))
+    return float(eval(value, {"__builtins__": {}}, _namespace(params)))
+
+
+def vec_expr(text):
+    """Canonicalize a point expression *string* to a bracketed list so users may omit the
+    outer brackets: `bore/2, 0, h` is accepted exactly like `[bore/2, 0, h]`. Shared by the
+    point evaluator and codegen so a bare entry both builds and exports correctly."""
+    text = text.strip()
+    return text if text.startswith("[") else f"[{text}]"
+
+
+def eval_vec(value, params=None):
+    """A point literal's value -> a concrete `[x, y, z]`. Like `eval_expr` but yields a
+    3-vector: an expression *string* is evaluated in the math+params namespace (so
+    `[bore/2, 0, h]` works, the point analogue of `bore/2`), while a list/tuple (a placed /
+    snapshot point, a default, a legacy pickle) passes through as plain floats. Raises on a
+    bad expression, same best-effort contract as `eval_expr`."""
+    if isinstance(value, str):
+        value = eval(vec_expr(value), {"__builtins__": {}}, _namespace(params))
+    return [float(x) for x in value]
 
 
 def expr_import_line():
@@ -67,7 +92,7 @@ def load_points(path):
 # `float`/`int` are expression strings, emitted verbatim. `point`/`point_list` codegen each
 # entry via _point_code (a name for a ref, else a list).
 CODEGEN = {
-    "point3": lambda v: repr([float(x) for x in v]),
+    "point3": lambda v: _vec_code(v),
     "float": lambda v: str(v),
     "int": lambda v: str(v),
     "point": lambda v: _point_code(v),
@@ -91,6 +116,7 @@ class BuildContext(dict):
     def __init__(self, optimize: bool = False):
         super().__init__()
         self.optimize = optimize
+        self.params: dict = {}  # name -> float, filled by Parameter steps as the replay runs
 
 
 class Step:
@@ -140,12 +166,18 @@ def _is_ref(entry):
     return isinstance(entry, Step)
 
 
+def _vec_code(entry):
+    """A point literal's source: an expression string verbatim (`[bore/2, 0, 0]`), else a
+    plain numeric list. Shared by the `point3` codegen and each `point`/`point_list` entry."""
+    return vec_expr(entry) if isinstance(entry, str) else repr([float(x) for x in entry])
+
+
 def _point_code(entry):
-    return entry.name if _is_ref(entry) else repr([float(x) for x in entry])
+    return entry.name if _is_ref(entry) else _vec_code(entry)
 
 
 def _resolve_point(entry, context):
-    return context[entry] if _is_ref(entry) else entry
+    return context[entry] if _is_ref(entry) else eval_vec(entry, context.params)
 
 
 def _no_refs(_value):
@@ -166,10 +198,11 @@ REF_EXTRACT = {
 # kind -> stored value turned into a live cb argument at build time
 RESOLVE = {
     "ref": lambda v, ctx: ctx[v],
+    "point3": lambda v, ctx: eval_vec(v, ctx.params),
     "point": _resolve_point,
     "point_list": lambda v, ctx: [_resolve_point(e, ctx) for e in v],
-    "float": lambda v, ctx: eval_expr(v),
-    "int": lambda v, ctx: int(eval_expr(v)),
+    "float": lambda v, ctx: eval_expr(v, ctx.params),
+    "int": lambda v, ctx: int(eval_expr(v, ctx.params)),
     "points_file": lambda v, ctx: load_points(v),
 }
 
@@ -265,7 +298,8 @@ class ValueStep(Step):
         return next(iter(self.SCHEMA))
 
     def build(self, context):
-        context[self] = self.values[self._field()]
+        field = self._field()
+        context[self] = resolve_value(self.values[field], self.SCHEMA[field], context)
         return context[self]
 
     def to_lines(self):

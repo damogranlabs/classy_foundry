@@ -25,7 +25,7 @@ a whole solid renders as a wireframe outline, so many simultaneous highlights st
 import numpy as np
 import polyscope as ps
 
-from ..steps.base import resolve_value
+from ..steps.base import eval_vec, resolve_value
 from ..steps.faces import EdgeRef, FaceEdgeRef, FaceRef, faces_of, operations_of
 from ..steps.point import PointStep
 from .display import POINT_RADIUS, _quad_mesh, axis_vectors, geometry_of, operation_corners
@@ -48,7 +48,7 @@ WIRE_RADIUS = 0.004                 # relative; the outline / curve highlight tu
 def _step_geometry(step, context):
     """A step's whole output geometry (shared with the renderers/scene-fit via `geometry_of`)."""
     value = context.get(step)
-    return geometry_of(step, value) if value is not None else None
+    return geometry_of(step, value, context.params) if value is not None else None
 
 
 def _face_geometry(face_ref, context):
@@ -85,14 +85,24 @@ def _axis_geometry(step, context):
     try:
         origin = np.asarray(resolve_value(step.values[origin_field], step.SCHEMA[origin_field],
                                           context), float).ravel()
-        direction = np.asarray(step.values[direction_field], float).ravel()
+        direction = np.asarray(resolve_value(step.values[direction_field],
+                                             step.SCHEMA[direction_field], context), float).ravel()
     except Exception:
         return None
     return ("axis", (origin, direction)) if origin.size == 3 == direction.size else None
 
 
+def _point_cloud(element, context):
+    """A literal point entry -> its highlight cloud. The literal may be an expression string
+    (`[bore/2, 0, 0]`), so it resolves through `eval_vec`; None (skipped) if it doesn't yet."""
+    try:
+        return ("cloud", [eval_vec(element[1], context.params)])
+    except Exception:
+        return None
+
+
 _TUPLE = {  # a tuple element is (tag, …): a literal point, or an axis carried by its step
-    "point": lambda e, context: ("cloud", [e[1]]),
+    "point": _point_cloud,
     "axis": lambda e, context: _axis_geometry(e[1], context),
 }
 

@@ -9,7 +9,8 @@ from ..steps.catalog import CATALOG
 from ..steps.mapped_sketch import MappedSketch
 from ..steps.optimize import Optimize
 from ..steps.point import PointStep
-from .widgets import edit_field
+from . import scene
+from .widgets import edit_field, vec_text
 
 MODEL_PATH = "model.pkl"
 SCRIPT_PATH = "mesh_script.py"
@@ -97,9 +98,9 @@ def _point_entry(step, field, index, entry, candidates, session):
     _dropper(session, (step, field, index))
     if not isinstance(new, PointStep):
         psim.SetNextItemWidth(-1)
-        row_changed, xyz = psim.InputFloat3("##xyz", new)
+        row_changed, text = psim.InputText("##xyz", vec_text(new))
         if row_changed:
-            new, changed = list(xyz), True
+            new, changed = text, True
     psim.PopID()
     return changed, new
 
@@ -349,6 +350,11 @@ def _reset_editing(model, sketch_editor, session):
     session["active"] = model.steps[0] if model.steps else None
 
 
+def _load(model, path):
+    """Load the steps and restore the Polyscope scene (camera + slice planes) saved with them."""
+    scene.apply(model.load(path))
+
+
 def _draw_mesh_actions(model, sketch_editor, session):
     """Persistence + output. The model path is editable, so several workflows live in named
     files; Save/Load round-trip the recipe (pickle). Returns True if the view must rebuild."""
@@ -359,9 +365,9 @@ def _draw_mesh_actions(model, sketch_editor, session):
     _, session["model_path"] = psim.InputText("##model_path", session["model_path"], max_str_len=256)
     path = session["model_path"]
     if psim.Button("Save"):
-        _report(session, f"Saved {path}", model.save, path)
+        _report(session, f"Saved {path}", model.save, path, scene.capture())
     psim.SameLine()
-    if psim.Button("Load") and _report(session, f"Loaded {path}", model.load, path):
+    if psim.Button("Load") and _report(session, f"Loaded {path}", _load, model, path):
         _reset_editing(model, sketch_editor, session)
         dirty = True
     psim.Separator()

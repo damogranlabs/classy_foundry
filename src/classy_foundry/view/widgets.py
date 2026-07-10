@@ -7,13 +7,21 @@ not here.
 
 import polyscope.imgui as psim
 
+def vec_text(value):
+    """A point literal shown as editable text: an expression string as-is (`[bore/2, 0, 0]`),
+    else its `[x, y, z]` list. The point analogue of a numeric field's free-text expression;
+    shared with the panel's point entries and the sketch table."""
+    return value if isinstance(value, str) else repr([float(x) for x in value])
+
+
 # kind -> callable(spec, value) -> (changed, new_value). Labels are hidden ("##v"); the
 # panel draws the visible label and sets the item width, so widgets fill the available
-# space. `float`/`int` are *expression strings* (e.g. "pi/2"), so they edit as free text and
-# are evaluated at build time (see steps.base.eval_expr); str() coerces legacy numeric
-# values. `choice` reads its options from the field's `choices` (hence the spec arg).
+# space. `float`/`int`/`point3` are *expression strings* (e.g. "pi/2", "[bore/2, 0, 0]"), so
+# they edit as free text and are evaluated at build time (see steps.base.eval_expr/eval_vec);
+# str()/vec_text coerce legacy numeric values. `choice` reads its options from the field's
+# `choices` (hence the spec arg).
 WIDGETS = {
-    "point3": lambda spec, value: psim.InputFloat3("##v", value),
+    "point3": lambda spec, value: psim.InputText("##v", vec_text(value)),
     "float": lambda spec, value: psim.InputText("##v", str(value)),
     "int": lambda spec, value: psim.InputText("##v", str(value)),
     "points_file": lambda spec, value: psim.InputText("##v", str(value)),  # path to a points file

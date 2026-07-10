@@ -1,13 +1,15 @@
 """MappedSketch sketcher: viewport click-to-place/snap + points/quads tables.
 
-The interaction rests on screen_coords_to_world_ray + camera position (drop a free point on
-the work plane), ps.pick (resolve an existing vertex by its world position), and ImGui
-tables -- no scene-graph code. Quad corners are picked by *world position* (depth-correct, so
-off-plane on-curve points select correctly and overlay markers resolve to their vertex), not
-by work-plane proximity. Placing a point is pick-based for reuse: a click on a reference
-point (`PointStep`) snapshots that point's exact position into the sketch (the sketch keeps
-plain positions, so it transforms rigidly — the curve binding lives in the clamp, not here);
-a click that misses every reference point drops a free point on the work plane.
+The interaction rests on ps.pick (the world position on whatever structure is under the
+cursor) and ImGui tables -- no scene-graph code, and **no work plane**: a sketch isn't
+required to be planar, so a point is placed wherever the click lands on existing geometry
+(the picker-of-everything — a reference point, a curve, an STL, another sketch). A reference
+point (`PointStep`) snapshots its *exact* built position; anything else uses the raw pick
+point. A click that hits nothing falls back to the world ground plane through the origin
+(oriented by `up_dir`) via screen_coords_to_world_ray + camera position. Placements are
+snapshots, not live refs, so the sketch keeps plain positions and transforms rigidly. Quad
+corners are likewise picked by *world position* (depth-correct, so an off-plane vertex or an
+overlay marker resolves to the right point).
 """
 
 import numpy as np
@@ -17,21 +19,34 @@ import polyscope.imgui as psim
 from ..geom import ray_plane_hit
 from ..steps.point import PointStep
 from . import labels
+from .widgets import vec_text
 
 LEFT_MOUSE = 0
 
 POINT_LABEL_COLOR = (0.75, 0.9, 1.0)   # point indices — light blue
 BLOCK_LABEL_COLOR = (1.0, 0.85, 0.35)  # block (quad) indices — amber
 
+# up_dir string -> the ground-plane normal it implies (the fallback placement plane's axis)
+_UP_NORMALS = {
+    "x_up": (1.0, 0.0, 0.0), "neg_x_up": (-1.0, 0.0, 0.0),
+    "y_up": (0.0, 1.0, 0.0), "neg_y_up": (0.0, -1.0, 0.0),
+    "z_up": (0.0, 0.0, 1.0), "neg_z_up": (0.0, 0.0, -1.0),
+}
 
-def draw_number_labels(sketch):
+
+def _up_normal():
+    return _UP_NORMALS.get(ps.get_up_dir(), (0.0, 0.0, 1.0))
+
+
+def draw_number_labels(sketch, params=None):
     """Per-frame text overlay for the sketch being edited: the point index at each vertex and
     the block index at each quad centroid — so the tables' index-based editing (a quad is four
     point indices) reads directly off the viewport. Camera-dependent, so the app callback runs
-    it every frame; a quad referencing an out-of-range point is skipped mid-edit."""
+    it every frame; a quad referencing an out-of-range point is skipped mid-edit. `params`
+    resolves any parametric (`[bore/2, 0, 0]`) positions to where they actually render."""
     if not sketch.positions:
         return
-    positions = np.asarray(sketch.positions, float).reshape(-1, 3)
+    positions = np.asarray(sketch.resolved_positions(params), float).reshape(-1, 3)
     labels.draw_labels([(positions[i], str(i)) for i in range(len(positions))], POINT_LABEL_COLOR)
     labels.draw_labels([(positions[quad].mean(axis=0), str(i))
                         for i, quad in enumerate(sketch.quads) if quad and max(quad) < len(positions)],
@@ -70,23 +85,27 @@ class SketchEditor:
         screen = psim.GetMousePos()
         if self.mode == "point":
             return self._place_point(screen, model)
-        return self._extend_quad(screen)
+        return self._extend_quad(screen, model)
 
     def _place_point(self, screen, model):
-        """Add a point: snapshot a reference point if the click hit one, else drop a free
-        point on the work plane. (Snapshot, not a live ref — the sketch stays a plain
-        position list so transforms stay rigid; the curve binding lives in the clamp.)"""
-        ref = self._picked_reference_position(screen, model)
-        if ref is not None:
-            self._append(ref)
+        """Add a point *onto whatever geometry is under the cursor* — the picker-of-everything:
+        the depth-correct world position on any structure (reference point, curve, another
+        sketch, an operation face, a Polyscope-sliced STL). A reference `Point` snapshots its
+        *exact* built value (a sphere-surface pick is otherwise slightly off). A click that hits
+        nothing falls to the world **ground plane through the origin** (oriented by `up_dir`);
+        for anything off that plane, place a reference point / translate later. Snapshots, not
+        live refs — the sketch stays a plain position list (rigid under transforms)."""
+        result = ps.pick(screen_coords=screen)
+        if result.is_hit:
+            self._append(self._pick_position(result, model))
             return True
-        hit = self._plane_hit(screen)
+        hit = self._ground_hit(screen)
         if hit is None:
             return False
         self._append(list(hit))
         return True
 
-    def _extend_quad(self, screen):
+    def _extend_quad(self, screen, model):
         """Add the clicked sketch vertex to the in-progress quad. Resolved by the pick's
         *world position* (depth-correct), not the work-plane intersection — so an off-plane
         on-curve point selects correctly instead of its plane-parallax neighbour, and an
@@ -95,7 +114,7 @@ class SketchEditor:
         result = ps.pick(screen_coords=screen)
         if not result.is_hit:
             return False
-        index = self._closest(np.asarray(result.position, float))
+        index = self._closest(np.asarray(result.position, float), model)
         if index is None:
             return False  # no existing points to connect
         self.pending.append(index)
@@ -104,36 +123,38 @@ class SketchEditor:
             self.pending = []
         return True
 
-    def _picked_reference_position(self, screen, model):
-        """Exact world position of a reference point (`PointStep`) under the click, or None
-        if the click missed every reference point. Resolves the picked step's built value, so
-        an on-curve point snaps to its precise `curve.get_point(param)`."""
-        result = ps.pick(screen_coords=screen)
-        if not result.is_hit:
-            return None
+    def _pick_position(self, result, model):
+        """The world position a hit contributes: a reference point's (`PointStep`) *exact*
+        built value — so an on-curve point snaps to its precise `curve.get_point(param)` — else
+        the raw depth-correct pick position on whatever structure was hit."""
         step = model.step_by_name(result.structure_name.split("::")[0])
-        if not isinstance(step, PointStep):
-            return None
-        value = model.build().get(step)
-        return None if value is None else list(np.asarray(value, float).ravel())
+        if isinstance(step, PointStep):
+            value = model.build().get(step)
+            if value is not None:
+                return list(np.asarray(value, float).ravel())
+        return list(np.asarray(result.position, float).ravel())
 
     def _armed(self):
         return (self.sketch is not None and self.mode is not None
                 and not psim.GetIO().WantCaptureMouse and psim.IsMouseClicked(LEFT_MOUSE))
 
-    def _plane_hit(self, screen):
-        """World point where the click ray meets the sketch plane, or None."""
+    def _ground_hit(self, screen):
+        """World point where the click ray meets the ground plane (through the origin, normal =
+        `up_dir`) — the fallback surface when a click lands on no geometry."""
         camera = ps.get_view_camera_parameters()
         return ray_plane_hit(camera.get_position(), ps.screen_coords_to_world_ray(screen),
-                             self.sketch.work_origin, self.sketch.work_normal)
+                             (0.0, 0.0, 0.0), _up_normal())
 
-    def _closest(self, point):
-        """Index of the existing point nearest to `point`, or None if there are none."""
-        if not self.sketch.positions:
+    def _closest(self, point, model):
+        """Index of the existing point nearest to `point` (a picked world position), or None if
+        there are none. Compares against *resolved* positions so a parametric vertex is matched
+        where it actually renders."""
+        positions = self.sketch.resolved_positions(model.build().params)
+        if not positions:
             return None
         target = np.asarray(point)
-        return min(range(len(self.sketch.positions)),
-                   key=lambda i: float(np.linalg.norm(target - np.asarray(self.sketch.positions[i]))))
+        return min(range(len(positions)),
+                   key=lambda i: float(np.linalg.norm(target - np.asarray(positions[i]))))
 
     def _append(self, hit):
         self.sketch.positions.append(list(hit))
@@ -141,12 +162,16 @@ class SketchEditor:
 
     # ---------- transient overlay ----------
 
-    def render_overlay(self):
+    def render_overlay(self, context=None):
+        """Re-add the transient markers after a rebuild. `context` carries the build's params so
+        a parametric vertex's marker sits where it renders (None on the very first build)."""
         if self.sketch is None:
             return
-        valid = len(self.sketch.positions)
-        self._marker("::pending", [self.sketch.positions[i] for i in self.pending if i < valid], (1.0, 1.0, 0.0))
-        chosen = [self.sketch.positions[self.selected]] if self._has_selection() else []
+        params = context.params if context is not None else None
+        positions = self.sketch.resolved_positions(params)
+        valid = len(positions)
+        self._marker("::pending", [positions[i] for i in self.pending if i < valid], (1.0, 1.0, 0.0))
+        chosen = [positions[self.selected]] if self._has_selection() else []
         self._marker("::selected", chosen, (1.0, 0.4, 0.0))
 
     def _has_selection(self):
@@ -208,9 +233,9 @@ class SketchEditor:
                 self.selected = i
             psim.TableNextColumn()
             psim.SetNextItemWidth(-1)
-            changed, new = psim.InputFloat3("", position)
+            changed, new = psim.InputText("", vec_text(position))  # free text: `[bore/2, 0, 0]` ok
             if changed:
-                self.sketch.positions[i] = list(new)
+                self.sketch.positions[i] = new
                 dirty = True
             psim.TableNextColumn()
             if psim.SmallButton("x"):

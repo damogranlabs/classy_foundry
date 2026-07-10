@@ -62,7 +62,7 @@ def _render_element(step, context):
 def _render_sketch(step, context):
     if not step.positions:
         return
-    points = np.asarray(step.positions, float).reshape(-1, 3)
+    points = np.asarray(step.resolved_positions(context.params), float).reshape(-1, 3)
     ps.register_point_cloud(points_cloud_name(step.name), points).set_radius(POINT_RADIUS)
     if step.quads:
         mesh = ps.register_surface_mesh(f"{step.name}::quads", points, np.asarray(step.quads, int))
@@ -128,23 +128,25 @@ RENDERERS = {
 }
 
 
-GEOMETRY = {  # render_kind -> (step, value) -> (topology, data); the geometry behind each renderer
-    "operation": lambda s, v: ("quad", element_quads(v)),
-    "shape": lambda s, v: ("quad", element_quads(v)),
-    "element": lambda s, v: ("quad", element_quads(v)),
-    "face": lambda s, v: ("quad", [v.point_array]),
-    "sketch_faces": lambda s, v: ("quad", [f.point_array for f in v.faces]),
-    "point": lambda s, v: ("cloud", [v]),
-    "curve": lambda s, v: ("curve", v.discretize(count=CURVE_SAMPLES)),
-    "sketch": lambda s, v: ("cloud", s.positions or None),  # raw points (may be in-progress)
+GEOMETRY = {  # render_kind -> (step, value, params) -> (topology, data); geometry behind each renderer
+    "operation": lambda s, v, p: ("quad", element_quads(v)),
+    "shape": lambda s, v, p: ("quad", element_quads(v)),
+    "element": lambda s, v, p: ("quad", element_quads(v)),
+    "face": lambda s, v, p: ("quad", [v.point_array]),
+    "sketch_faces": lambda s, v, p: ("quad", [f.point_array for f in v.faces]),
+    "point": lambda s, v, p: ("cloud", [v]),
+    "curve": lambda s, v, p: ("curve", v.discretize(count=CURVE_SAMPLES)),
+    # raw resolved positions (like the sketch renderer) so an in-progress/quad-less sketch still shows
+    "sketch": lambda s, v, p: ("cloud", s.resolved_positions(p) or None),
 }
 
 
-def geometry_of(step, value):
+def geometry_of(step, value, params=None):
     """(topology, data) for a step's output — the geometry the cue overlay and scene-fit share
-    with the renderers, keyed by the same `render_kind`. None if the kind draws nothing."""
+    with the renderers, keyed by the same `render_kind`. `params` resolves a sketch's parametric
+    vertices (ignored by the value-derived kinds). None if the kind draws nothing."""
     extract = GEOMETRY.get(step.render_kind)
-    return extract(step, value) if extract else None
+    return extract(step, value, params) if extract else None
 
 
 _BOUND_POINTS = {  # topology -> the (-1, 3) coordinates that geometry contributes to a fit
@@ -163,7 +165,7 @@ def model_bounds(model, upto=None):
         value = context.get(step)
         if value is None:
             continue
-        geometry = geometry_of(step, value)
+        geometry = geometry_of(step, value, context.params)
         if geometry is None or geometry[1] is None:
             continue
         topology, data = geometry
@@ -231,7 +233,10 @@ def sync_display(model, overlay=None, upto=None, optimize=False):
     ps.remove_all_structures()
     _render_axes()
     for step in model.prefix(upto):
-        RENDERERS.get(step.render_kind, _render_nothing)(step, context)
+        try:
+            RENDERERS.get(step.render_kind, _render_nothing)(step, context)
+        except Exception:
+            pass  # one bad renderer (mid-edit expression, degenerate geometry) mustn't blank the rest
     if overlay is not None:
-        overlay()
+        overlay(context)  # the sketch overlay resolves its positions with the build's params
     return context  # stashed by the caller so cues can resolve element geometry between rebuilds

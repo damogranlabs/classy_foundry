@@ -24,6 +24,7 @@ from .optimize import (
     RadialClamp,
     SketchOptimizer,
 )
+from .parameter import Parameter
 from .patch import SetPatch
 from .point import OnCurvePoint, Point
 from .revolve import Revolve
@@ -40,6 +41,7 @@ from .shapes import (
     RevolvedRing,
     RevolvedShape,
 )
+from .stacks import ExtrudedStack, RevolvedStack
 from .surface import Surface
 from .transform import Copy, Rotate, Scale, Translate
 from .sketches import BoxedCircle, Circle, HalfCircle, OneCoreCircle, Oval
@@ -47,6 +49,7 @@ from .wedge import Wedge
 
 CATALOG = [
     # References
+    Parameter,
     Point,
     PointsFileCurve,
     OnCurvePoint,
@@ -74,6 +77,9 @@ CATALOG = [
     ExtrudedShape,
     RevolvedShape,
     LoftedShape,
+    # Solids / Stacks
+    ExtrudedStack,
+    RevolvedStack,
     # Solids / Catalogue
     Cylinder,
     Frustum,

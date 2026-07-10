@@ -80,10 +80,23 @@ principles in `claude.md`.
 
 ## Document model — pickle the steps; script is one-way export
 
-The persisted document is a **pickle of the step list**. Save = `pickle.dump` the
-model; Load = `pickle.load` it back. Parsing Python source back into Python objects is
-fragile and pointless when the objects can be serialized directly, so there is no
-exec/round-trip load.
+The persisted document is a **pickle of `{steps, scene}`**. Save = `pickle.dump` the step
+list plus an opaque **scene** blob; Load = `pickle.load` it back. Parsing Python source back
+into Python objects is fragile and pointless when the objects can be serialized directly, so
+there is no exec/round-trip load. (A bare-list pickle from before the `scene` field still
+loads — `load` detects the dict vs. list shape — so old documents keep working.)
+
+**Scene state (implemented).** Polyscope persists none of its scene across sessions (its
+`.polyscope.ini` is only window geometry + UI scale), so the savable, non-appearance parts
+ride in the pickle's `scene` blob: the whole **camera** in one string (`get_view_as_json` —
+viewpoint, up/front dir, fov, projection, nav style) and each **slice plane**'s pose + flags
+(the cross-section cuts). The blob is captured/applied by `view/scene.py` (the only side that
+touches `polyscope`); `model` stores it **verbatim and uninterpreted**, so the one-way
+`view → model` rule holds — `model` never imports `polyscope`. Excluded on purpose: the
+**ground plane** (all its setters are write-only — nothing to read back) and **appearance**
+(background, per-structure colours — the latter also fights the per-rebuild re-registration).
+Slice planes have no enumeration API, so they're found by probing their auto-names
+(`Scene Slice Plane N`) with a small consecutive-miss tolerance.
 
 The classy_blocks Python script remains a **one-way export** (`to_lines()` over the
 ordered steps): the portable, hand-editable/runnable artifact a user takes to produce
@@ -115,6 +128,26 @@ fails to build (best-effort, so the step just drops out of the preview until it 
 Numbers still pass through unchanged, so old pickles/defaults keep working. This is the
 one place a "plain float" is deliberately a string — and it stays inside the schema-driven
 path (a `kind`, a `WIDGETS` text entry, a `RESOLVE`/`CODEGEN` pair), no special-casing.
+
+**Float parameters — named numbers the model is built on (implemented).** A `Parameter`
+step (`steps/parameter.py`, category `References`, palette label **Float**) is a plain
+`ValueStep` holding one `float` field, so it reads/edits/pickles/codegens like any other
+step — `ValueStep` already emits `name = <expr>`, so `bore = 86` / `radius = bore/2` fall
+out of the existing codegen with *no* new path. The one addition is that a parameter's
+**name enters the expression namespace**: `BuildContext` grows a `params` map, each
+`Parameter.build` evaluates its expression (over the params defined *above* it, so
+parameters compose) and publishes `name → value`, and `eval_expr(value, params)` merges
+those over `EXPR_NAMESPACE` (params win, so a user name can shadow a math name). So every
+downstream numeric field reads `bore/2` as naturally as `pi/2`, and the exported script —
+parameters emitted verbatim at the top in list order — is a genuinely parametric,
+hand-editable classy_blocks script. `render_kind=None` (a scalar draws nothing).
+
+Parameters are referenced **by name in a string**, not by identity, so they are invisible
+to the identity-based forward-ref guard and to `model.remove`'s reference check. A field
+that reads a parameter defined below it (or later deleted) simply fails to build and drops
+from the preview — the same best-effort leniency as any bad expression, no new machinery.
+Keeping them out of the identity-ref graph is deliberate: a parameter is a scalar for
+expressions only, never a `point`/`ref` target, so it never appears in those dropdowns.
 
 ---
 
@@ -152,6 +185,33 @@ the work uniformly for every step: `RESOLVE` (value → live `cb` arg at build) 
 `REF_EXTRACT` (the embedded refs, so rename-safety and the forward-ref check cover
 them). This is the natural extension of the schema-driven design — adding a step type is
 still "declare a `SCHEMA`."
+
+**A point literal is an expression *vector* (implemented).** A literal coordinate is not a
+bare number triple but an **expression string that evaluates to a 3-vector** — `[bore/2, 0,
+h]` — the point analogue of the numeric field's `pi/2`. So a point coordinate can read the
+float **Parameters** (and math names) exactly as a scalar field does, and codegen emits it
+verbatim (`apex = [bore/2, 0, h]`), keeping the exported script genuinely parametric. One
+helper carries it — `eval_vec(value, params)`, the vector twin of `eval_expr`: a *string*
+evaluates in the math+params namespace, a list/tuple (a placed/snapshot point, a default, a
+legacy pickle) passes through as floats, so nothing old breaks. It stays inside the
+schema-driven path — `RESOLVE`/`CODEGEN` for `point3` and for each `point`/`point_list`
+entry, a single `WIDGETS`/panel text field (`vec_text`), no special-casing — and the same
+`point3` fields that were fixed axes/normals (`Revolve.axis`, a plane normal) are now
+parametric for free. The `Point` `ValueStep` resolves its field through the same `RESOLVE`,
+so a referenced `Point` still hands downstream steps concrete coordinates. Placement via the
+viewport (dropper, sketcher) still writes plain numeric lists — the string form is what you
+*type* when you want a coordinate driven by a parameter.
+
+**Parametric sketch vertices (implemented).** A `MappedSketch`'s `positions` is a
+`point_list`, so the above applies there too: a sketch vertex can be typed `[bore/2, 0, 0]`
+and tracks its parameter, while a **snapshot** of a reference point (the sketcher's
+click-reuse) still stores a plain numeric list — so the sketch stays a plain position list
+that transforms rigidly (the deliberate stance in **Interaction primitives**; an expression
+is evaluated to a fixed coord at build, so it doesn't reintroduce a live binding). The raw
+render / overlay / number-labels resolve through `MappedSketch.resolved_positions(params)`
+(a mid-edit un-evaluable coord falls back to the origin so quad indices stay aligned); the
+cue/fit path (`geometry_of`, now threaded the build's `params`) resolves the same way, so an
+in-progress, quad-less sketch still frames and highlights.
 
 **`points_file` kind (implemented).** A field that holds a **file path** to a list of 3D
 points; `RESOLVE` loads it with `numpy.loadtxt` at build, `CODEGEN` emits
@@ -315,7 +375,13 @@ Each step renders **from its own built `cb` value (or raw data)**, not from
 validly connected (assemble would refuse). `sync_display` builds the model once into a
 context `{step: cb_value}`, wipes (`reset_selection` + `remove_all_structures`), draws the
 **world-axes triad**, then renders each step via a `render_kind → renderer` registry (see
-**Step class hierarchy**), and finally re-adds the editor's transient overlay.
+**Step class hierarchy**), and finally re-adds the editor's transient overlay. Each renderer
+runs inside a per-step `try/except` — **best-effort, mirroring `model.build`** — so one step
+whose renderer raises (a mid-edit expression, a stale quad index, degenerate geometry) drops
+out silently instead of blanking every step after it in the loop. (The `sketch` renderer is
+the one that draws from *raw* recipe data rather than the guarded build value, so it is the
+usual beneficiary; `MappedSketch.resolved_positions` additionally coerces every vertex to a
+valid 3-vector, origin-filling a bad one, so a parametric coordinate can't throw here at all.)
 
 A shared `_quad_mesh(point_arrays)` helper builds `(vertices, quad_faces)` from a list of
 4-point arrays — reused by the operation, face, sketch-faces, and shape renderers (one quad
@@ -533,18 +599,29 @@ to the marker**, not the whole list.
 
 ### Interaction primitives (all on Polyscope picking + ImGui, no scene-graph code)
 
-- **Sketcher** (a sketch step) — *implemented*. Click places a point via
-  `screen_coords_to_world_ray` ∩ work plane; quad corners are selected by `ps.pick` world
-  position (depth-correct, so off-plane on-curve points select correctly — *not* work-plane
-  proximity); ImGui tables edit points/quads. ~170 lines, no Coin3D equivalent. The proof
-  the platform handles the hard, spatial part.
-  - **Reference-point reuse** *(implemented)* — in point mode a click that lands on a
-    reference point (`PointStep` — Single point / on-curve) **snapshots its exact position**
-    into the sketch (pick-based, via `ps.pick` → step → built value); a click that misses
-    drops a free point on the work plane. Snapshot, *not* a live ref: the sketch stays a
-    plain position list so it transforms rigidly — the curve binding lives in the clamp, not
-    the sketch (the resolution of the transform problem). This is what lets a sketch vertex
-    sit exactly on an on-curve point so the optimizer can clamp it.
+- **Sketcher** (a sketch step) — *implemented*. Point placement is **the picker-of-everything
+  (decided)**: `ps.pick` returns the depth-correct world position on *whatever structure is
+  under the cursor* — a reference point, a curve, an STL (e.g. one the user has sliced with
+  Polyscope's cutting plane), another sketch — and that *is* the placed point. Quad corners are
+  likewise selected by `ps.pick` world position. ImGui tables edit points/quads. No Coin3D
+  equivalent — the proof the platform handles the hard, spatial part.
+  - **No work plane (decided; reversed).** A sketch **isn't required to be planar**, so it has
+    no plane of its own — the earlier per-sketch `work_origin`/`work_normal` and the
+    ray-∩-plane placement are **removed**. Points land on real geometry; the plane was only
+    ever a way to turn a 2D click into a 3D point, and picking onto geometry does that
+    directly. A click that hits **nothing** falls back to the world **ground plane through the
+    origin** (oriented by `up_dir` — `screen_coords_to_world_ray` ∩ that plane); Polyscope's
+    ground can't be tilted (`up_dir` is axis-only) or read back (no height getter), so it's a
+    fixed horizontal default, not an adjustable surface. For a point off that plane, place a
+    reference `Point` (now expression-parametric) and pick it, or translate later — "good
+    enough for 99%," and the user can arrange their own reference geometry for the rest.
+  - **Reference-point reuse** *(implemented)* — a click on a reference point (`PointStep` —
+    Single point / on-curve) **snapshots its exact built position** (via `ps.pick` → step →
+    built value, so an on-curve point snaps to its precise `curve.get_point(param)`); a pick on
+    any other structure uses the raw `ps.pick` position. Snapshot, *not* a live ref: the sketch
+    stays a plain position list so it transforms rigidly — the curve binding lives in the
+    clamp, not the sketch (the resolution of the transform problem). This is what lets a sketch
+    vertex sit exactly on an on-curve point so the optimizer can clamp it.
 - **Selection is tool-scoped, not ambient (decided; the old viewport→list mirror is removed).**
   A bare viewport click in normal mode selects nothing; `session["active"]` is set **only from
   the step list**. There is no `sync_selection`/`session["select"]`/`last_selection` machinery
@@ -805,7 +882,11 @@ separation mechanically:
 
 **Next:**
 
-1. **Stacks** — `Extruded/Revolved/Lofted stack` (the remaining shape family).
+1. **Stacks** *(done — Extruded/Revolved)* — `ExtrudedStack`/`RevolvedStack` on a shared
+   `StackStep` base (`steps/stacks.py`), pure `ProducingStep` declarations that `adds_to_mesh`
+   and render/patch-pick through the existing `"shape"` path (a `Stack` exposes `.operations`,
+   all `operations_of` needs). `LoftedStack` is absent — classy_blocks has no such class, only
+   the `TransformedStack` base — so it isn't offered (like the un-exported catalogue solids).
 2. **Extract face** *(done)* — `ExtractFace`: click a face → `op.get_face(side)` as a reusable
    profile, on a shared `FaceStep` base (Extrude/Loft `accept` it). Reuses the patch
    face-picker via a single `face` input — see **Patches** / `steps/faces.py`.
@@ -844,8 +925,9 @@ separation mechanically:
 
 **Deferred (decided):** palette categorization polish, the transform **gizmo** (numeric
 translate/rotate/scale/copy done; patterned multi-copy is left to **Stacks**, not a standalone
-array step), projection onto STL surfaces (load+show done), non-planar sketches, a file-dialog
-picker for `points_file` (path is plain text for now). A standalone `Vector` reference was
+array step), projection onto STL surfaces (load+show done), a file-dialog
+picker for `points_file` (path is plain text for now). (Non-planar sketches are no longer
+deferred — the picker-of-everything drops the work-plane assumption entirely; see **Sketcher**.) A standalone `Vector` reference was
 tried and **reverted** (an arrow-rendered point) — a proper `Axis` belongs in classy_blocks
 core; reference-point + literal axis covers the vast majority. `QuarterDisk`/`Annulus`/full
 `Sphere` are absent only because classy_blocks doesn't export them at top level (one-line cb
@@ -863,6 +945,7 @@ a `RENDER["axis"]` entry, magenta), so it clears/scales like any other highlight
 **Step palette contents** (✓ = implemented)
 
 - References
+  - ✓ Float (a named number → an expression-namespace variable other fields' expressions read)
   - ✓ Single point (fixed)
   - ✓ Point on curve (a curve + parameter → `curve.get_point(param)`; referenceable like any point)
   - ✓ Points file (a list of 3d points → `LinearInterpolatedCurve`)
@@ -893,9 +976,9 @@ a `RENDER["axis"]` entry, magenta), so it clears/scales like any other highlight
     - ✓ Revolved shape
     - ✓ Lofted shape
   - Stacks
-  - Extruded stack
-    - Revolved stack
-    - Lofted stack
+    - ✓ Extruded stack
+    - ✓ Revolved stack
+    - Lofted stack *(absent — no `LoftedStack` in classy_blocks, only the `TransformedStack` base)*
   - Solids catalogue *(`("Solids", "Catalogue")`)*:
     - ✓ Cylinder
     - ✓ Conical frustum

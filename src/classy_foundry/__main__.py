@@ -50,7 +50,8 @@ def main():
         update_cues(model, session)  # every frame: survives rebuilds, tracks same-structure re-clicks
         draw_edges(model, session)  # edge picking + kind/chop indicators, while an Edge step is active
         if isinstance(active, MappedSketch):  # point/block number overlay for the edited sketch
-            draw_number_labels(active)
+            context = session.get("context")
+            draw_number_labels(active, context.params if context is not None else None)
 
     ps.set_user_callback(callback)
     ps.show()
