@@ -117,6 +117,7 @@ class BuildContext(dict):
         super().__init__()
         self.optimize = optimize
         self.params: dict = {}  # name -> float, filled by Parameter steps as the replay runs
+        self.errors: dict = {}  # step -> the exception that stopped its build; surfaced in the panel
 
 
 class Step:

@@ -16,6 +16,15 @@ MODEL_PATH = "model.pkl"
 SCRIPT_PATH = "mesh_script.py"
 BLOCKMESH_PATH = "blockMeshDict"
 
+ERROR_COLOR = (1.0, 0.45, 0.45, 1.0)  # a step that failed to build — red marker + message
+
+
+def _build_errors(session):
+    """The last rebuild's per-step build exceptions ({step: error}); empty before the first
+    build. `sync_display` returns a `BuildContext` (which carries `.errors`); a plain dict or a
+    missing context both fall back to no errors."""
+    return getattr(session.get("context"), "errors", {})
+
 
 def _build_palette_tree(catalog):
     """Nest step classes into a menu tree by category path; leaves stored under key None."""
@@ -231,7 +240,7 @@ def _generic_editor(step, sketch_editor, model, session):
 
 def _sketch_editor(step, sketch_editor, model, session):
     sketch_editor.activate(step)
-    return sketch_editor.draw()
+    return sketch_editor.draw(session.get("context"))
 
 
 def _optimize_editor(step, sketch_editor, model, session):
@@ -268,7 +277,7 @@ def _drag_handle(step, model):
     return False
 
 
-def _draw_step_row(step, model, session, suspended):
+def _draw_step_row(step, model, session, suspended, error):
     dirty = False
     psim.PushID(str(id(step)))
     if suspended:  # rows after the marker aren't built; grey them to show it
@@ -291,6 +300,11 @@ def _draw_step_row(step, model, session, suspended):
         if session.get("marker") is step:
             session["marker"] = None  # don't leave the marker pointing at a deleted step
         dirty = True
+    if error is not None:  # this step failed to build — flag it, message on hover
+        psim.SameLine()
+        psim.TextColored(ERROR_COLOR, "(!)")
+        if psim.IsItemHovered():
+            psim.SetTooltip(f"{type(error).__name__}: {error}")
     if suspended:
         psim.PopStyleColor()
     psim.PopID()
@@ -313,13 +327,19 @@ def _draw_palette(model, session):
 
 def _draw_steps(model, sketch_editor, session):
     dirty = False
+    errors = _build_errors(session)
     live = model.prefix(session.get("marker"))  # rows past the marker render greyed
     for step in list(model.steps):
-        dirty |= _draw_step_row(step, model, session, step not in live)
+        dirty |= _draw_step_row(step, model, session, step not in live, errors.get(step))
     dirty |= _draw_palette(model, session)
     active = session["active"]
     if active is not None and active in model.steps:
         psim.Separator()
+        error = errors.get(active)
+        if error is not None:  # tell the user *why* the active step didn't build
+            psim.PushStyleColor(psim.ImGuiCol_Text, ERROR_COLOR)
+            psim.TextWrapped(f"Build failed — {type(error).__name__}: {error}")
+            psim.PopStyleColor()
         dirty |= EDITORS.get(type(active), _generic_editor)(active, sketch_editor, model, session)
     return dirty
 

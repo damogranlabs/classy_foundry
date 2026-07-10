@@ -60,12 +60,14 @@ def _render_element(step, context):
 
 
 def _render_sketch(step, context):
-    if not step.positions:
+    coords = step.resolved_positions(context)  # entries may be point refs; resolve to coordinates
+    drawn = [c for c in coords if c is not None]
+    if not drawn:
         return
-    points = np.asarray(step.resolved_positions(context.params), float).reshape(-1, 3)
-    ps.register_point_cloud(points_cloud_name(step.name), points).set_radius(POINT_RADIUS)
-    if step.quads:
-        mesh = ps.register_surface_mesh(f"{step.name}::quads", points, np.asarray(step.quads, int))
+    ps.register_point_cloud(points_cloud_name(step.name), np.asarray(drawn, float)).set_radius(POINT_RADIUS)
+    if step.quads and None not in coords:  # quads need every vertex; skip while one is unresolved
+        mesh = ps.register_surface_mesh(f"{step.name}::quads",
+                                        np.asarray(coords, float).reshape(-1, 3), np.asarray(step.quads, int))
         mesh.set_edge_width(1.0)  # show block borders by default (the Polyscope edge-width setting)
 
 
@@ -128,25 +130,26 @@ RENDERERS = {
 }
 
 
-GEOMETRY = {  # render_kind -> (step, value, params) -> (topology, data); geometry behind each renderer
-    "operation": lambda s, v, p: ("quad", element_quads(v)),
-    "shape": lambda s, v, p: ("quad", element_quads(v)),
-    "element": lambda s, v, p: ("quad", element_quads(v)),
-    "face": lambda s, v, p: ("quad", [v.point_array]),
-    "sketch_faces": lambda s, v, p: ("quad", [f.point_array for f in v.faces]),
-    "point": lambda s, v, p: ("cloud", [v]),
-    "curve": lambda s, v, p: ("curve", v.discretize(count=CURVE_SAMPLES)),
-    # raw resolved positions (like the sketch renderer) so an in-progress/quad-less sketch still shows
-    "sketch": lambda s, v, p: ("cloud", s.resolved_positions(p) or None),
+GEOMETRY = {  # render_kind -> (step, value, context) -> (topology, data); geometry behind each renderer
+    "operation": lambda s, v, ctx: ("quad", element_quads(v)),
+    "shape": lambda s, v, ctx: ("quad", element_quads(v)),
+    "element": lambda s, v, ctx: ("quad", element_quads(v)),
+    "face": lambda s, v, ctx: ("quad", [v.point_array]),
+    "sketch_faces": lambda s, v, ctx: ("quad", [f.point_array for f in v.faces]),
+    "point": lambda s, v, ctx: ("cloud", [v]),
+    "curve": lambda s, v, ctx: ("curve", v.discretize(count=CURVE_SAMPLES)),
+    # raw resolved positions (like the sketch renderer) so an in-progress/quad-less sketch still
+    # shows; refs/expressions resolve through the context, unresolved (None) vertices dropped.
+    "sketch": lambda s, v, ctx: ("cloud", [c for c in s.resolved_positions(ctx) if c is not None] or None),
 }
 
 
-def geometry_of(step, value, params=None):
+def geometry_of(step, value, context=None):
     """(topology, data) for a step's output — the geometry the cue overlay and scene-fit share
-    with the renderers, keyed by the same `render_kind`. `params` resolves a sketch's parametric
-    vertices (ignored by the value-derived kinds). None if the kind draws nothing."""
+    with the renderers, keyed by the same `render_kind`. `context` resolves a sketch's ref /
+    parametric vertices (ignored by the value-derived kinds). None if the kind draws nothing."""
     extract = GEOMETRY.get(step.render_kind)
-    return extract(step, value, params) if extract else None
+    return extract(step, value, context) if extract else None
 
 
 _BOUND_POINTS = {  # topology -> the (-1, 3) coordinates that geometry contributes to a fit
@@ -165,7 +168,7 @@ def model_bounds(model, upto=None):
         value = context.get(step)
         if value is None:
             continue
-        geometry = geometry_of(step, value, context.params)
+        geometry = geometry_of(step, value, context)
         if geometry is None or geometry[1] is None:
             continue
         topology, data = geometry
@@ -209,7 +212,7 @@ def fit_view(model, upto=None):
 
 def axis_vectors(cloud, arrows):
     """Attach true-length (`ambient`) direction arrows to a one-point cloud, scaled to the
-    pinned scene — the shared triad/axis primitive. `arrows` = [(name, unit_dir, colour), …]."""
+    current scene extent — the shared triad/axis primitive. `arrows` = [(name, unit_dir, colour), …]."""
     length = 0.5 * ps.get_length_scale()
     for name, direction, colour in arrows:
         cloud.add_vector_quantity(name, np.asarray([direction], float) * length,
@@ -217,8 +220,8 @@ def axis_vectors(cloud, arrows):
 
 
 def _render_axes():
-    """A world-origin triad (x=red, y=green, z=blue), sized to the pinned scene so it stays
-    legible on any model and stops resizing as geometry is added/removed (see `pin_scene`)."""
+    """A world-origin triad (x=red, y=green, z=blue), sized to the current scene extent
+    (`get_length_scale`) so it stays legible on any model."""
     cloud = ps.register_point_cloud(AXES_NAME, np.zeros((1, 3)))
     cloud.set_radius(POINT_RADIUS)
     axis_vectors(cloud, [(axis, colour, colour) for axis, colour in AXES])  # colour = unit dir
@@ -238,5 +241,5 @@ def sync_display(model, overlay=None, upto=None, optimize=False):
         except Exception:
             pass  # one bad renderer (mid-edit expression, degenerate geometry) mustn't blank the rest
     if overlay is not None:
-        overlay(context)  # the sketch overlay resolves its positions with the build's params
+        overlay(context)  # the sketcher's markers resolve ref / parametric vertices through the context
     return context  # stashed by the caller so cues can resolve element geometry between rebuilds

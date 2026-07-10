@@ -124,8 +124,10 @@ angles/distances/counts read naturally and the exported script stays hand-writte
 a restricted `eval` over a curated set of `numpy` names — `pi`, `sin`, `deg2rad`, …) at
 **build** time, and emitted **verbatim** in codegen; the exported script imports those
 names (`expr_import_line()` → `from numpy import …`). A bad/mid-edit expression simply
-fails to build (best-effort, so the step just drops out of the preview until it parses).
-Numbers still pass through unchanged, so old pickles/defaults keep working. This is the
+fails to build (best-effort, so the step just drops out of the preview until it parses) —
+but the failure is **surfaced, not silent** (see **Build errors** below), so a genuinely
+broken step reads as an error rather than a vanished one. Numbers still pass through
+unchanged, so old pickles/defaults keep working. This is the
 one place a "plain float" is deliberately a string — and it stays inside the schema-driven
 path (a `kind`, a `WIDGETS` text entry, a `RESOLVE`/`CODEGEN` pair), no special-casing.
 
@@ -226,6 +228,20 @@ check. `build()` replays the list to reconstruct live `cb` values; **pickle pers
 the step list** (recipe only — scalars + references by identity, never `cb` geometry),
 same declarative-replay property as before. See **Naming** for how references stay
 rename-safe.
+
+**Build errors are surfaced, not silent (implemented).** `model.build` is best-effort — a step
+that raises is skipped so a partial model still displays — but the exception is **recorded** on
+the build context (`BuildContext.errors`, `{step: exception}`) instead of discarded. The panel
+reads that map (`_build_errors`, off the stashed `session["context"]`) and flags each failed step:
+a red **(!)** on its row (the exception on hover) and the full `Type: message` above its editor
+while it's active. This is what turns "the curve just isn't there" into "`FileNotFoundError:
+foo.pts not found`" — the class of bug where a mistyped path / bad expression / unsatisfied ref
+vanished with no feedback. (A fuller shared **console** — also serving write/optimizer output — is
+still deferred; this is the lightweight per-step version.) **Reference-data paths are resolved
+relative to the process working directory** (`np.loadtxt`), emitted verbatim in codegen, so a
+`points_file` must be reachable from where the app runs (`src/` per the run checklist) — an
+absolute path, or one relative to that dir; a bare filename in the repo root won't resolve from
+`src/`, and now says so.
 
 **The mesh.** There is one implicit mesh. Mesh-level steps (the auto-graders, later a
 mesh optimizer/smoother) act on it via the `apply_to_mesh` hook (run after every
@@ -410,9 +426,8 @@ origin point cloud, x=red/y=green/z=blue (the colour tuple *is* the unit directi
 every rebuild inside `sync_display` (not the overlay slot, which the sketcher owns). Its
 structure name has a space (`"world axes"`), so it can never collide with a step name or resolve
 as a selection. Polyscope has **no built-in world-axes gizmo**; this is the ~5-line
-vector-quantity substitute. Its length is `0.5 · get_length_scale()`, so it tracks the **pinned**
-scene (see **Scene environment** below) — legible on any model, and it no longer resizes as
-geometry is added/removed.
+vector-quantity substitute. Its length is `0.5 · get_length_scale()`, so it tracks the current
+scene extent (see **Scene environment** below) — legible on any model.
 
 **Block borders (implemented).** Every block surface — the sketch's quad mesh and each
 operation/shape's side quads — registers with `set_edge_width(1.0)` (Polyscope's own edge-width
@@ -427,27 +442,35 @@ is camera-dependent it runs **every frame from the app callback** (like `cues`),
 rebuild. Its first use is the **sketch number overlay** (`sketch_editor.draw_number_labels`,
 drawn only while the active step is a `MappedSketch`): the **point index** at each vertex (light
 blue) and the **block index** at each quad centroid (amber) — so the points/quads tables'
-index-based editing (a quad *is* four point indices) reads straight off the viewport. This is the
-same projection any future world-anchored label (patch names, dimensions) would reuse.
+index-based editing (a quad *is* four point indices) reads straight off the viewport. Its second
+use is **`draw_clusters`** — a small row of glyphs beside an edge (laid out along the edge's screen
+direction, nudged perpendicular so it never covers the pickable curve), which the edge overlay uses
+for its kind/chop indicators (see **Edges**). This is the same projection any future world-anchored
+label (patch names, dimensions) would reuse.
 
-**Scene environment — own the extents (decided).** By default Polyscope **re-fits the scene to
-the data on every structure change**; since the viewport does `remove_all_structures` + re-add
-on every edit, that made the length scale, ground-plane height/grid, camera scale, and triad all
-lurch around — and collapse when the scene emptied. So the app **takes control**: `pin_scene()`
-(at startup) calls `set_automatically_compute_scene_extents(False)`, pins a fixed default world
-(`set_bounding_box` + `set_length_scale`), and sets a quiet **`shadow_only`** ground (no changing
-tile grid). Nothing lurches on rebuild, and an empty scene can't collapse. `fit_view` (computes
-the model's own bounds via `display.model_bounds` — the shared `geometry_of`, overlays excluded so
-there's no feedback loop with the triad — then re-pins the world and reframes via
-`reset_camera_to_home_view`) runs **once at startup** to frame the initial model. **Manual re-fit
-uses Polyscope's own view controls** (its built-in reset/fit behaves the same on our pinned scene),
-so there's no separate app button. (`geometry_of` — `render_kind → (topology, data)` — is the one
-geometry table now shared by the renderers, the cue overlay, and the fit.)
+**Scene environment — Polyscope's defaults (decided, reversed).** The app does **no** scene-extent
+management: it never calls `set_automatically_compute_scene_extents(False)`, sets no bounding box or
+length scale, and pins no ground. Polyscope's own auto-fit owns the scene — it re-fits to the data
+on every structure change (and the app *does* `remove_all_structures` + re-add on every edit), so the
+length scale, camera, ground, and triad track whatever geometry is currently built.
+
+An earlier design **owned the extents** (`pin_scene` = fixed default world + `shadow_only` ground;
+`fit_view`/`model_bounds` framed the model once at startup) to stop the length scale/ground/camera
+from lurching as geometry changed. That was **removed**: with a pinned world *and* auto-compute off,
+newly added geometry at a very different scale — e.g. a real airfoil `.pts` curve ~0.03 across in a
+scene pinned to ~3 — became an unreachable speck (Polyscope's own reset-view frames the *pinned* box,
+not the data, so nothing could re-frame onto it). Handing the scene back to Polyscope's default
+auto-fit means the view always tracks the built geometry's actual scale, with no app-side fit
+machinery to maintain. The lurch-on-rebuild the pinning avoided is accepted as the lesser cost. So
+there is no `pin_scene`/`fit_view`/`model_bounds` and no app Fit button. (`geometry_of` —
+`render_kind → (topology, data)` — remains, now shared just by the renderers and the cue overlay.)
 
 This replaces the FreeCAD attempt's two-tier `Part.*` scheme. (The fully assembled & graded
 cell mesh from `mesh.assemble()` could be an optional on-demand "show final cells" view
-later, but it is not the working display.) Curved-edge preview (`op.edges` → curve
-network) is a future enhancement, not yet built.
+later, but it is not the working display.) Edge display is **not** a passive per-step renderer
+— an edge step produces nothing of its own (`render_kind = None`). Instead the block/face edges
+are drawn as a **pickable, per-frame overlay while an Edge step is active** (`view/edges.py`, see
+**Edges** below), the same tool-scoped pattern as the cue overlay.
 
 ### Visual cues — pre/selection highlighting (`view/cues.py`, done)
 
@@ -486,8 +509,45 @@ Dispatch is table-driven throughout (no `if`-chains, mirroring `display.RENDERER
 (`FIELD_ELEMENTS`), `topology → register` (`RENDER`). A **single face/point** renders as a filled
 glow (lifted toward the camera so it neither z-fights nor is occluded); a **whole solid** renders
 as a wireframe outline, so many simultaneous highlights stay legible. Colours/sizes are tunable
-constants. **Edges** get a `GEOMETRY` entry when edge geometry actually renders (`op.edges`,
-deferred).
+constants. **Edges** now participate: an `EdgeRef` input resolves to `"curve"` geometry
+(`ELEMENTS[EdgeRef]`, plus a `FIELD_ELEMENTS["edge"]` entry), so a step's picked target edge
+highlights green like any other input. The *pickable* edge overlay and its kind/chop indicators
+are a separate tool-scoped mechanism — see **Edges** below.
+
+### Edges — pickable overlay + edge steps (`view/edges.py`, `steps/edge.py`, done)
+
+An edge is **straight by default**; an **edge step** sets an `EdgeData` on one picked edge via
+classy_blocks' `add_edge` API. Deleting the step restores the straight edge, so there is no "line"
+kind. The design is deliberately symmetric across the two edge owners:
+
+- **Operation block-edges** — `op.add_edge(corner_1, corner_2, data)`. The target is an `EdgeRef`
+  (a `SolidRef`, stride 12): a step reference + a flat per-operation edge index → its two corners
+  via `EDGE_PAIRS`. Palette: `("Solids", "Add edge")`.
+- **Flat-face edges** — `face.add_edge(corner, data)`. The target is a `FaceEdgeRef` (`face * 4 +
+  corner`); `faces_of` unifies a bare `Face` and a sketch's many faces. Palette: `("Flat", "Add
+  edge")`. Restricted to hand-laid faces (`Face`, `MappedSketch`) — the disk catalogue generates
+  its own rim curvature.
+
+**One `_KINDS` table, two targets.** The five edge-data kinds — Arc, Origin, Angle, Project,
+OnCurve — are each declared once (cb class + label + its positional arg fields), and a
+`_family(prefix, target, category)` factory generates *both* the operation and the face subclass of
+each from that single table (`type(...)`, bound to the module namespace so pickled recipes resolve
+by `edge.<Name>`). `EdgeStep` is blind to which owner it targets — it just calls the ref's
+`apply_edge`/`add_edge_line` — so the two families are the same kinds pointed at different targets,
+no per-kind duplication (the clamp-step dispatch pattern again). **`OnCurve`** is the curved kind:
+a spline/polyLine (a `choice` field) follows a reference **`CurveStep`** (which carries the
+through-points), so there are no inline point tables — the curve foundation the roadmap flagged.
+
+**The overlay (`view/edges.py`).** While `session["active"]` is an `EdgeStep`, every valid target
+(`model.candidates` for the target field — so overlay and pick accept the same things) draws its
+edges as a **pickable curve network**, re-registered every frame from the cached build context
+(reserved `"…::edges"` names, like the cues overlay, so they survive rebuilds and vanish when
+another step is selected). A curve-network pick returns `element_type == "edge"` + a flat index
+natively, so a click builds the `EdgeRef`/`FaceEdgeRef` directly (`picker.PICK_REFS` gains
+`edge`/`face_edge`). Each edge also shows a **glyph cluster** via `draw_clusters`: its `EdgeData`
+kind (one glyph, nothing for straight) plus, on an operation, one `#` per **edge-chop**
+(`op.chops.edge_chops` — the hook the future **Grade edge** step will fill). No ambient edge
+clutter — edges show only while being edited, matching the cue philosophy.
 
 ---
 
@@ -599,29 +659,39 @@ to the marker**, not the whole list.
 
 ### Interaction primitives (all on Polyscope picking + ImGui, no scene-graph code)
 
-- **Sketcher** (a sketch step) — *implemented*. Point placement is **the picker-of-everything
-  (decided)**: `ps.pick` returns the depth-correct world position on *whatever structure is
-  under the cursor* — a reference point, a curve, an STL (e.g. one the user has sliced with
-  Polyscope's cutting plane), another sketch — and that *is* the placed point. Quad corners are
-  likewise selected by `ps.pick` world position. ImGui tables edit points/quads. No Coin3D
-  equivalent — the proof the platform handles the hard, spatial part.
+- **Sketcher** (a sketch step) — *implemented*. Point placement is **pick-based reuse**: `ps.pick`
+  resolves the reference point under the cursor and that *is* the placed vertex; quad corners are
+  likewise selected by `ps.pick` world position (depth-correct, so off-plane on-curve points select
+  correctly — *not* work-plane proximity). ImGui tables edit points/quads. No Coin3D equivalent —
+  the proof the platform handles the hard, spatial part.
   - **No work plane (decided; reversed).** A sketch **isn't required to be planar**, so it has
     no plane of its own — the earlier per-sketch `work_origin`/`work_normal` and the
-    ray-∩-plane placement are **removed**. Points land on real geometry; the plane was only
-    ever a way to turn a 2D click into a 3D point, and picking onto geometry does that
-    directly. A click that hits **nothing** falls back to the world **ground plane through the
-    origin** (oriented by `up_dir` — `screen_coords_to_world_ray` ∩ that plane); Polyscope's
+    ray-∩-plane placement are **removed**. A click that lands on a reference point reuses it (see
+    below); a click that misses drops a free coordinate on the world **ground plane through the
+    origin** (oriented by `up_dir` — `screen_coords_to_world_ray` ∩ that plane). Polyscope's
     ground can't be tilted (`up_dir` is axis-only) or read back (no height getter), so it's a
     fixed horizontal default, not an adjustable surface. For a point off that plane, place a
-    reference `Point` (now expression-parametric) and pick it, or translate later — "good
-    enough for 99%," and the user can arrange their own reference geometry for the rest.
-  - **Reference-point reuse** *(implemented)* — a click on a reference point (`PointStep` —
-    Single point / on-curve) **snapshots its exact built position** (via `ps.pick` → step →
-    built value, so an on-curve point snaps to its precise `curve.get_point(param)`); a pick on
-    any other structure uses the raw `ps.pick` position. Snapshot, *not* a live ref: the sketch
-    stays a plain position list so it transforms rigidly — the curve binding lives in the
-    clamp, not the sketch (the resolution of the transform problem). This is what lets a sketch
-    vertex sit exactly on an on-curve point so the optimizer can clamp it.
+    reference `Point` (expression-parametric) and pick it, or translate later.
+  - **Reference-point reuse** *(implemented; live ref, revised from snapshot)* — in point mode a
+    click that lands on a reference point (`PointStep` — Single point / on-curve) stores a **live
+    reference** to it (pick-based, via `ps.pick` → step). So a sketch vertex *is* the named point —
+    the sketch follows it when the curve/param changes, and codegen names it
+    (`cb.MappedSketch([leading_edge, …], quads)` — the readable, parametric output the user wanted).
+    This works because `positions` is already a `point_list` (reference-or-literal per entry, exactly
+    like `Face` corners), so `build`/codegen needed no change; only the sketcher's *display* did —
+    every place it reads vertex coordinates now goes through `sketch.resolved_positions(context)` (a
+    ref → its built coordinate, an **expression string** `[bore/2, 0, 0]` → its evaluated value via
+    `context.params`, a literal through; an entry that can't resolve → None, skipped). A stored
+    entry is therefore a `PointStep`, an `[x, y, z]` literal, *or* an expression string, mixed freely
+    in one sketch (the points table edits literal/expression entries as free text).
+    - **Earlier this snapshotted** (froze the coordinate) so the sketch was a plain position list
+      that transformed rigidly, with an optimizer **CurveClamp** re-binding the vertex to the curve
+      — keeping "placeable/transformable" and "on the curve" separable. That's still reachable
+      per-entry: a **freeze** button in the points table converts a chosen reference to its current
+      coordinate for the transform-then-clamp workflow. The default flipped to live-ref because the
+      parametric build is the common need and reads far better in codegen; freeze is the opt-in for
+      the clamp path. (Caveat unchanged: transforming a sketch that holds a live ref then clamping
+      that vertex breaks the clamp's coordinate-match — freeze those vertices first.)
 - **Selection is tool-scoped, not ambient (decided; the old viewport→list mirror is removed).**
   A bare viewport click in normal mode selects nothing; `session["active"]` is set **only from
   the step list**. There is no `sync_selection`/`session["select"]`/`last_selection` machinery
@@ -672,7 +742,8 @@ real output.
 | Step type | classy_blocks | Spatial projection (clarity win) |
 |---|---|---|
 | Point *(done)* / Curve *(done)* / Surface *(STL load+show done)* | points, curves, surfaces | place/pick points; **Points-file curve** *(implemented — `LinearInterpolatedCurve` from a file)*; **STL surface** *(implemented — load via trimesh, shown muted as a reference backdrop; reference-only, **projection** wires the path into codegen later)* |
-| `Face` *(done)* | 4 points + curved edges | pick/place corners; edge types per side *(edges deferred)* |
+| `Face` *(done)* | 4 points + curved edges | pick/place corners; curve an edge with an **Edge step** (below) |
+| Edge steps *(done)* | `add_edge(…, cb.Arc/Origin/Angle/Project/OnCurve)` | **click an edge** on any solid (block edges) or hand-laid face → set its curvature/projection; per-frame pickable overlay with kind/chop glyphs. One `_KINDS` table drives both owners. See **Edges** |
 | `ExtractFace` *(done)* | `op.get_face(side)` | **click a face** on any operation/shape → a reusable profile (a `FaceStep`, so Extrude/Loft accept it). Uses the patch face-picker (a single `face` input), not the ancestor's `get_closest_face(point)` — exact, click-the-face |
 | `Connector` *(done)* | `cb.Loft(faceA, faceB)` | **click two faces** → the bridging block, in one step (fast intermediate geometry). Two `face` inputs |
 | `MappedSketch` *(done)* | positions + quads | the sketcher *(implemented)* — kept **separate** from Face (decided); now a `SketchStep` so it feeds Shapes |
@@ -683,7 +754,7 @@ real output.
 | Auto-graders *(done)* | `FixedCount`/`Simple`/`Inflation` grader | a `HelperStep`: `cb.Grader(mesh, …).grade()`; grades every ungraded row → the one thing a Shape needs to write |
 | `SetPatch` (tag) *(done)* | `op.set_patch(side, name)` per picked face | **click faces → name**: a patch is a name + a set of picked faces; the system derives each operation + side (see **Patches** below). Works on operations *and* shapes uniformly. `set_default_patch` not required to write |
 | `Project` | `project_*(geometry)` | *deferred* — pick edge/face → pick target surface/curve |
-| `Transform` *(translate/rotate/scale/copy done)* | `op.translate/rotate/scale(…)`, `op.copy()` | plain `ConfiguringStep`s on cb's uniform element protocol (operations/shapes/sketches/faces). **Numeric** (the "gizmo vs numeric" UI question sidestepped — numeric first); `origin` is a pickable `point` pivot (default world origin, not cb's centroid). `Copy` is a `DerivedStep` (new element, `render_kind="element"` → unified renderer); copies are first-class targets (transform/patch/connect a copy). Patterned multi-copy (**arrays**) is left to **Stacks**, not a standalone step |
+| `Transform` *(translate/rotate/scale/copy done)* | `op.translate/rotate/scale(…)`, `op.copy()` | plain `ConfiguringStep`s on cb's uniform element protocol — any step whose built value is a cb `ElementBase` (operations/shapes/copies/sketches/faces *and reference curves*; `is_transformable` keys on the geometry-producing `render_kind`s, so a Point — a bare `[x,y,z]` literal, not an element — is excluded). **Numeric** (the "gizmo vs numeric" UI question sidestepped — numeric first); `origin` is a pickable `point` pivot (default world origin, not cb's centroid). `Copy` is a `DerivedStep` (new element, `render_kind="element"` → unified renderer); copies are first-class targets (transform/patch/connect a copy). Patterned multi-copy (**arrays**) is left to **Stacks**, not a standalone step |
 | Smooth / Optimize | Sketch/Shape/Mesh smoothers & optimizers | smoothers are `HelperStep`s; optimizers decompose into producing + per-kind **clamp steps** + optimize, on cb's existing clamp API (see **Optimization & smoothing**) |
 | Write | assemble/grade/write | *implemented* — Write blockMeshDict button (no default patch needed) |
 
@@ -760,8 +831,9 @@ never touched, so the un-optimized state simply rebuilds.
 
 **Postponed for v1 (decided):** result **caching** (after Run, the optimized preview shows
 until the next dirty edit, then reverts — the real geometry still comes out at write) and a
-shared **output/console window** for the optimizer report. Both deferred; the console will
-later serve write/build errors too.
+shared **output/console window** for the optimizer report. Both deferred — though per-step
+**build errors** are already surfaced inline in the panel (see **Build errors** in the Data
+model section); a console would extend that to write/optimizer output.
 
 ### Clamps are explicit steps — no smart points (decided, reversed)
 
@@ -855,11 +927,13 @@ separation mechanically:
 - **Palette order** — follows `CATALOG` insertion order, not alphabetical (the `sorted()`
   in the menu was removed; `CATALOG` is grouped + ordered to match this doc's palette).
 - **World-axes triad** — origin gizmo (x/y/z = red/green/blue ambient vectors), sized to the
-  pinned scene so it stays legible and stops resizing.
-- **Scene environment** — own the extents: `pin_scene` disables Polyscope's per-rebuild auto-fit
-  (fixed world + `shadow_only` ground, no more lurching/collapsing); `fit_view` (`model_bounds`)
-  frames the model **once at startup**, and manual re-fit uses Polyscope's own view controls.
-  `geometry_of` is the shared `render_kind → geometry` table (renderers + cues + fit).
+  current scene extent (`get_length_scale`) so it stays legible on any model.
+- **Scene environment** — left to Polyscope's default auto-fit (no `pin_scene`/`fit_view`/
+  `model_bounds`, no app Fit button). An earlier "own the extents" design (fixed pinned world +
+  once-at-startup fit) was **reversed** because pinned extents made out-of-scale geometry (a real
+  airfoil `.pts` curve in a unit-scale scene) an unreachable speck; letting Polyscope auto-fit
+  tracks the built geometry's actual scale. `geometry_of` (`render_kind → geometry`) remains,
+  shared by renderers + cues.
 - **More operations** — `Revolve`, `Loft`, `Wedge` (pure `ProducingStep` declarations,
   all `"operation"` render).
 - **Expression inputs** — `float`/`int` fields are math-expression strings (`pi/2`,
@@ -879,6 +953,11 @@ separation mechanically:
   field kind (combo) for `Simple.take`. **This is what lets Shapes / catalogue solids write
   a blockMeshDict** — grading is a grader + optional manual operation `Chop`, with *no*
   per-shape chop code. (Supersedes the earlier "shape grading" plan.)
+- **Edges (Solids/Flat → Add edge)** — `EdgeStep` family for operation block-edges and flat-face
+  edges, five kinds (Arc/Origin/Angle/Project/OnCurve) generated from one `_KINDS` table over two
+  targets; `EdgeRef`/`FaceEdgeRef` (flat-index refs sharing the `FaceRef` machinery), the `edge`/
+  `face_edge` picker kinds, a per-frame pickable overlay with kind/chop glyphs (`view/edges.py`),
+  and the `EdgeRef` cue highlight. `OnCurve` follows a `CurveStep`.
 
 **Next:**
 
@@ -916,8 +995,12 @@ separation mechanically:
    on cb's uniform element protocol; numeric, pickable-point pivot. Patterned multi-copy
    (linear/polar **arrays**) is **left to Stacks** (cb's own multi-element family — see below),
    not a standalone array step. See the `Transform` table row.
-9. **Edges / projections** — to discuss; the Points-file curve is the foundation (edges on
-   faces, projection targets).
+9. **Edges** *(done)* — `EdgeStep` family (Arc/Origin/Angle/Project/OnCurve) for both operation
+   block-edges (`EdgeRef`) and flat-face edges (`FaceEdgeRef`), one `_KINDS` table over two
+   targets; pickable per-frame overlay + kind/chop glyphs (`view/edges.py`). `OnCurve` follows a
+   `CurveStep`, so the Points-file curve is its foundation. See **Edges**. **Projections** (a
+   standalone Project step onto STL/curve targets) remain deferred — the edge `Project` *kind* is
+   done, but face/point projection steps are not.
 10. **List → viewport highlight** — *done as part of **Visual cues***. Selecting a step in the
     list highlights its output (calm-blue outline) and every input it references (green) in the
     viewport; `view/cues.py` sources all highlights from the active step. (Polyscope has no
@@ -954,6 +1037,12 @@ a `RENDER["axis"]` entry, magenta), so it clears/scales like any other highlight
   - ✓ Face (specify points manually)
   - ✓ Extract face (click a face on an operation/shape)
   - ✓ Mapped sketch (with an editor)
+  - Add edge *(on a hand-laid `Face`/`MappedSketch` — the `FaceEdgeRef` family)*:
+    - ✓ Arc
+    - ✓ Origin
+    - ✓ Angle
+    - ✓ Project
+    - ✓ On curve
   - Sketches catalogue:
     - Quarter circle *(absent — `QuarterDisk` not cb-exported)*
     - ✓ Half circle
@@ -989,20 +1078,22 @@ a `RENDER["axis"]` entry, magenta), so it clears/scales like any other highlight
     - ✓ Quarter sphere
     - ✓ Half sphere *(`Hemisphere`)*
     - Sphere *(absent — full `Sphere` not cb-exported)*
+  - Add edge *(on a block edge of any operation/shape/copy — the `EdgeRef` family)*:
+    - ✓ Arc
+    - ✓ Origin
+    - ✓ Angle
+    - ✓ Project
+    - ✓ On curve
 - Modifiers
   - ✓ Copy *(`element.copy()` → new solid; one renderer covers op/shape copies)*
   - ✓ Translate
   - ✓ Rotate *(cb `rotate`; pivot `origin` is a pickable point)*
   - ✓ Scale
-  - Modify edge
-    - Arc (midpoint)
-    - Arc (origin)
-    - Arc (angle and axis)
-    - Project (duplicated in project)
-    - On Curve
+  - Modify edge *(done — implemented as the **Add edge** step families under `Solids` and `Flat`
+    above, not a `Modifiers` submenu: Arc / Origin / Angle / Project / On curve)*
   - Project:
     - Point
-    - Edge (duplicated in modify edge)
+    - Edge *(done — the `Project` edge kind under **Add edge**)*
     - Face
 - Optimizers
   - Sketch smoother

@@ -22,7 +22,7 @@ class PointsFileCurve(CurveStep):
     cb_name = "LinearInterpolatedCurve"
     default_name = "curve"
     category = ("References",)
-    label = "Points file"
+    label = "Curve from points"
     SCHEMA = {
         "points": {"kind": "points_file", "label": "Points file", "default": ""},
     }

@@ -48,7 +48,7 @@ WIRE_RADIUS = 0.004                 # relative; the outline / curve highlight tu
 def _step_geometry(step, context):
     """A step's whole output geometry (shared with the renderers/scene-fit via `geometry_of`)."""
     value = context.get(step)
-    return geometry_of(step, value, context.params) if value is not None else None
+    return geometry_of(step, value, context) if value is not None else None
 
 
 def _face_geometry(face_ref, context):

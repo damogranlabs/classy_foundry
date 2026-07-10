@@ -15,8 +15,11 @@ from .faces import is_face_source
 
 
 def is_transformable(step) -> bool:
-    """Any element classy_blocks can transform: a solid, shape, copy, sketch, or face profile."""
-    return step.render_kind in ("operation", "shape", "element", "sketch", "sketch_faces", "face")
+    """Any step whose built value is a cb `ElementBase` — everything with the in-place transform
+    protocol: a solid, shape, copy, sketch, face profile, or a reference curve. Keyed by
+    `render_kind` (the geometry-producing kinds), which is why `"point"` is *excluded*: a Point
+    builds to a bare `[x, y, z]` literal, not an element, so it has no `.rotate()`."""
+    return step.render_kind in ("operation", "shape", "element", "sketch", "sketch_faces", "face", "curve")
 
 
 class Copy(DerivedStep):

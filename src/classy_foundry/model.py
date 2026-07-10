@@ -108,13 +108,16 @@ class Model:
         the build to the rollback marker's prefix (see `prefix`); the default builds all.
         `optimize` gates the expensive optimizer pass (off for the live viewport, on for
         write/export and the Run button); it rides on the context (see `BuildContext`).
+
+        A step that fails is skipped but its exception is recorded in `context.errors`, so the
+        failure is visible (the panel surfaces it) instead of vanishing silently.
         """
         context = BuildContext(optimize)
         for step in self.prefix(upto):
             try:
                 step.build(context)
-            except Exception:
-                pass
+            except Exception as error:
+                context.errors[step] = error
         return context
 
     def build_mesh(self):
