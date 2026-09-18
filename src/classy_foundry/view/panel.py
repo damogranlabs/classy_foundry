@@ -210,6 +210,30 @@ def _edge_field(step, field, spec, model, session):
     return changed
 
 
+def _cusp_field(step, field, spec, model, session):
+    """A single picked cusp of a curve: a toggle that arms a one-shot viewport pick (the cusp
+    markers show while this step is active — see `view/cusps.py`), then the bound index. Re-picking
+    replaces it; 'x' clears it. Mirrors `_edge_field`; the value is a plain int (the curve is a
+    separate `ref` field)."""
+    psim.PushID(field)
+    psim.TextUnformatted(spec["label"])
+    target = (step, field, None)
+    armed = session.get("pick") == target
+    current = step.values[field]
+    if psim.Button("stop picking" if armed else "pick cusp"):
+        session["pick"] = None if armed else target
+    psim.SameLine()
+    psim.TextUnformatted(f"cusp {current}" if current is not None else "<none>")
+    changed = False
+    if current is not None:
+        psim.SameLine()
+        if psim.SmallButton("x"):
+            step.values[field] = None
+            changed = True
+    psim.PopID()
+    return changed
+
+
 def _edit_field(step, field, spec, model, session):
     if spec["kind"] == "ref":
         return _ref_field(step, field, spec, model, session)
@@ -221,6 +245,8 @@ def _edit_field(step, field, spec, model, session):
         return _face_list_field(step, field, spec, model, session)
     if spec["kind"] in ("edge", "face_edge"):
         return _edge_field(step, field, spec, model, session)
+    if spec["kind"] == "cusp":
+        return _cusp_field(step, field, spec, model, session)
     psim.PushID(field)
     psim.TextUnformatted(spec["label"])
     psim.SetNextItemWidth(-1)

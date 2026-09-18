@@ -8,7 +8,7 @@ and add it here. The palette groups these by `category`, preserving this list's 
 from .box import Box
 from .chop import Chop
 from .connector import Connector
-from .curve import PointsFileCurve
+from .curve import CrossSectionCurve, PointsFileCurve, RevolvedProfile
 from .edge import FACE_EDGES, OPERATION_EDGES
 from .extrude import Extrude
 from .face import ExtractFace, Face
@@ -26,7 +26,7 @@ from .optimize import (
 )
 from .parameter import Parameter
 from .patch import SetPatch
-from .point import OnCurvePoint, Point
+from .point import CuspPoint, OnCurvePoint, Point
 from .revolve import Revolve
 from .shapes import (
     Cylinder,
@@ -48,12 +48,16 @@ from .sketches import BoxedCircle, Circle, HalfCircle, OneCoreCircle, Oval
 from .wedge import Wedge
 
 CATALOG = [
-    # References
+    # Sources — raw inputs (numbers, points, curves, surfaces)
     Parameter,
     Point,
-    PointsFileCurve,
-    OnCurvePoint,
     Surface,
+    RevolvedProfile,
+    PointsFileCurve,
+    # References — geometry derived from the sources
+    OnCurvePoint,
+    CuspPoint,
+    CrossSectionCurve,
     # Flat
     Face,
     ExtractFace,
@@ -89,6 +93,8 @@ CATALOG = [
     EighthSphere,
     QuarterSphere,
     HalfSphere,
+    # Solids / Add edge
+    *OPERATION_EDGES,
     # Modifiers
     Copy,
     Translate,
@@ -104,8 +110,6 @@ CATALOG = [
     CurveClamp,
     # Optimizers (run)
     Optimize,
-    # Solids / Add edge
-    *OPERATION_EDGES,
     # Grading
     Chop,
     # Grading / Automatic

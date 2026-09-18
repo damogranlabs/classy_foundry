@@ -1027,12 +1027,18 @@ a `RENDER["axis"]` entry, magenta), so it clears/scales like any other highlight
 
 **Step palette contents** (✓ = implemented)
 
-- References
+- Sources
   - ✓ Float (a named number → an expression-namespace variable other fields' expressions read)
   - ✓ Single point (fixed)
-  - ✓ Point on curve (a curve + parameter → `curve.get_point(param)`; referenceable like any point)
+  - ✓ STL surface
+  - Revolved STL surface
   - ✓ Points file (a list of 3d points → `LinearInterpolatedCurve`)
-  - ✓ STL surface (load via trimesh, shown as a muted reference backdrop)
+- References
+  - ✓ Point on curve (a curve + parameter → `curve.get_point(param)`; referenceable like any point)
+  - Cusp point
+  - Curve from cross-section
+  - Midpoint (between a multitude of selected points)
+  - Formula (point based on user-provided equation) (needs a better name)
 - Flat
   - ✓ Face (specify points manually)
   - ✓ Extract face (click a face on an operation/shape)

@@ -20,7 +20,7 @@ class SketchStep(ProducingStep):
     """Shared base for flat-sketch profiles (a marker for `accepts`, plus common attrs)."""
 
     adds_to_mesh = False
-    category = ("Flat", "Sketches")
+    category = ("Flat", "Sketches catalogue")
     render_kind = "sketch_faces"
 
 

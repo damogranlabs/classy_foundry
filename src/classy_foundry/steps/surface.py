@@ -1,29 +1,42 @@
-"""'STL surface' step — load an STL and show it as reference geometry.
+"""'STL surface' source — load an STL as a queryable `cb.TriangulatedSurface`.
 
-Pure scaffolding for now: classy_blocks references a surface by *path* (a blockMeshDict
-`searchableSurface`), not by its loaded mesh, so the loaded triangles are only for the
-viewport — a backdrop to build against instead of in thin air. It adds nothing to the mesh
-and emits no script (reference-only); **projection** will later wire the path into codegen.
+Other steps *source data* from it (they reference it, `accepts=SurfaceStep`): a curve extracts a
+cross-section (`surface.get_cross_sections(...)`), and a surface-snapping clamp finds closest
+points (`surface.get_closest_point(...)`). It also shows in the viewport as a muted backdrop to
+build against.
+
+The mesh is read once (memoised by path in `geom.load_trimesh`) and wrapped in the cb surface at
+build; codegen emits `cb.TriangulatedSurface.from_file(path)` so the exported script reads the
+file itself. Earlier this step was display-only and emitted no script — it is now a real source
+because cb gained a queryable `TriangulatedSurface`.
 """
 
-from ..geom import load_stl
-from .base import Step
+import classy_blocks as cb
+
+from ..geom import load_trimesh
+from .base import ProducingStep
 
 
-class Surface(Step):
-    category = ("References",)
-    default_name = "surface"
-    label = "STL surface"
+class SurfaceStep(ProducingStep):
+    """Marker base for surface sources — the single 'is-a surface' truth, so any input that
+    accepts a surface (a cross-section curve, a snapping clamp) accepts them all uniformly.
+    Concrete surfaces add their cb wrapping."""
+
     render_kind = "surface"
+
+
+class Surface(SurfaceStep):
+    cb_name = "TriangulatedSurface"
+    default_name = "surface"
+    category = ("Sources",)
+    label = "STL surface"
     SCHEMA = {
         "file": {"kind": "text", "label": "STL file", "default": ""},
     }
 
-    def build(self, context):
-        path = self.values["file"]
-        if path:  # load failures are swallowed by model.build → the surface simply won't show
-            context[self] = load_stl(path)
-        return context.get(self)
+    def _construct(self, args):
+        # wrap the cached (path-memoised) mesh — don't re-read the STL on every rebuild
+        return cb.TriangulatedSurface(load_trimesh(args[0]))
 
-    def to_lines(self):
-        return []  # reference-only until projection references the path
+    def _construct_expr(self, args_src):
+        return f"cb.TriangulatedSurface.from_file({args_src})"

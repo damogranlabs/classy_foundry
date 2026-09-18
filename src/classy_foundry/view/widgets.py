@@ -8,10 +8,11 @@ not here.
 import polyscope.imgui as psim
 
 def vec_text(value):
-    """A point literal shown as editable text: an expression string as-is (`[bore/2, 0, 0]`),
-    else its `[x, y, z]` list. The point analogue of a numeric field's free-text expression;
-    shared with the panel's point entries and the sketch table."""
-    return value if isinstance(value, str) else repr([float(x) for x in value])
+    """A point literal shown as editable text: an expression string as-is (`bore/2, 0, 0`),
+    else its bare `x, y, z` (no brackets -- `vec_expr` re-wraps a bare comma string at build
+    time). The point analogue of a numeric field's free-text expression; shared with the
+    panel's point entries and the sketch table."""
+    return value if isinstance(value, str) else ", ".join(repr(float(x)) for x in value)
 
 
 # kind -> callable(spec, value) -> (changed, new_value). Labels are hidden ("##v"); the

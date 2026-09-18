@@ -72,10 +72,13 @@ def eval_vec(value, params=None):
     3-vector: an expression *string* is evaluated in the math+params namespace (so
     `[bore/2, 0, h]` works, the point analogue of `bore/2`), while a list/tuple (a placed /
     snapshot point, a default, a legacy pickle) passes through as plain floats. Raises on a
-    bad expression, same best-effort contract as `eval_expr`."""
+    bad expression, same best-effort contract as `eval_expr`. The 3-way unpack also raises
+    when a mid-edit string yields the wrong count (e.g. `1, 2,` -> two elements), so an
+    unfinished vector fails to build until it parses cleanly rather than reaching a reshape."""
     if isinstance(value, str):
         value = eval(vec_expr(value), {"__builtins__": {}}, _namespace(params))
-    return [float(x) for x in value]
+    x, y, z = value
+    return [float(x), float(y), float(z)]
 
 
 def expr_import_line():
@@ -216,17 +219,29 @@ def resolve_value(value, spec, context):
 
 
 class ProducingStep(Step):
-    """A step that constructs a new value: `name = cb.X(args...)`."""
+    """A step that constructs a new value: `name = cb.X(args...)`.
+
+    Construction is factored into `_construct`/`_construct_expr` so a subclass can build via a
+    classmethod (`cb.X.from_file(...)`) or post-process the result (e.g. a surface's extracted
+    `.curve`) by overriding just those two — the schema-driven argument resolution/codegen is
+    shared, not duplicated."""
+
+    def _construct(self, args):
+        """The live cb value from resolved positional `args`. Default: `cb.<cb_name>(*args)`."""
+        return getattr(cb, self.cb_name)(*args)
+
+    def _construct_expr(self, args_src):
+        """The source expression from rendered `args_src`. Default: `cb.<cb_name>(args)`."""
+        return f"cb.{self.cb_name}({args_src})"
 
     def build(self, context):
         args = [resolve_value(self.values[f], spec, context) for f, spec in self.SCHEMA.items()]
-        value = getattr(cb, self.cb_name)(*args)
-        context[self] = value
-        return value
+        context[self] = self._construct(args)
+        return context[self]
 
     def to_lines(self):
         args = ", ".join(CODEGEN[spec["kind"]](self.values[f]) for f, spec in self.SCHEMA.items())
-        return [f"{self.name} = cb.{self.cb_name}({args})"]
+        return [f"{self.name} = {self._construct_expr(args)}"]
 
 
 class ConfiguringStep(Step):

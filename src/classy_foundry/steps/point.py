@@ -7,7 +7,7 @@ parameter. Both resolve to a plain coordinate, so the generic point-ref plumbing
 codegen, ref-extract) already handles them.
 """
 
-from .base import DerivedStep, ValueStep
+from .base import CODEGEN, DerivedStep, Step, ValueStep, eval_expr
 from .curve import CurveStep
 
 
@@ -21,7 +21,7 @@ class Point(PointStep, ValueStep):
     so it codegens as a plain literal — exactly how hand-written scripts use reference points."""
 
     default_name = "point"
-    category = ("References",)
+    category = ("Sources",)
     label = "Single point"
     render_kind = "point"
     SCHEMA = {
@@ -43,3 +43,38 @@ class OnCurvePoint(PointStep, DerivedStep):
         "curve": {"kind": "ref", "label": "Curve", "default": None, "accepts": CurveStep},
         "param": {"kind": "float", "label": "Parameter (0..1)", "default": "0.5"},
     }
+
+
+class CuspPoint(PointStep, Step):
+    """A reference point pinned to a curve's cusp (a sharp turn): the sibling of `OnCurvePoint`
+    where the location isn't a typed parameter but a *picked* cusp. It resolves to
+    `curve.find_cusps(threshold)[cusp].point`, re-found on every build — so when the curve
+    changes (an edited points file today, an STL-extracted profile later) the point tracks the
+    feature, not a frozen parameter. Indexing by position is safe while cusp count/order are
+    stable (dimensions change, shape doesn't) — the `FaceRef`/`EdgeRef` see-and-fix contract.
+
+    `curve` is the ordinary `ref` field (reused verbatim from `OnCurvePoint`); `threshold` a plain
+    `float` (radians; an expression like `pi/6` works); `cusp` the one new field — the picked cusp
+    index, filled by clicking a marker in the cusp overlay (see `view/cusps.py`, `picker`)."""
+
+    default_name = "cusp_point"
+    category = ("References",)
+    label = "Cusp point"
+    render_kind = "point"
+    SCHEMA = {
+        "curve": {"kind": "ref", "label": "Curve", "default": None, "accepts": CurveStep},
+        "threshold": {"kind": "float", "label": "Angle threshold", "default": 0.5},
+        "cusp": {"kind": "cusp", "label": "Cusp", "default": None, "accepts": CurveStep},
+    }
+
+    def build(self, context):
+        curve = context[self.values["curve"]]
+        cusps = curve.find_cusps(eval_expr(self.values["threshold"], context.params))
+        context[self] = cusps[self.values["cusp"]].point
+        return context[self]
+
+    def to_lines(self):
+        curve = self.values["curve"]
+        name = curve.name if curve is not None else "None"
+        threshold = CODEGEN["float"](self.values["threshold"])
+        return [f"{self.name} = {name}.find_cusps({threshold})[{self.values['cusp']}].point"]

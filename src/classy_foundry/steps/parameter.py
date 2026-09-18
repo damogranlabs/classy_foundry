@@ -19,7 +19,7 @@ from .base import ValueStep, eval_expr
 
 class Parameter(ValueStep):
     default_name = "param"
-    category = ("References",)  # a plain named number, alongside the other reference inputs
+    category = ("Sources",)  # a plain named number, alongside the other raw inputs
     label = "Float"
     SCHEMA = {
         "value": {"kind": "float", "label": "Value", "default": "1.0"},

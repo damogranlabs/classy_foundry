@@ -12,6 +12,7 @@ markers) re-add itself.
 import numpy as np
 import polyscope as ps
 
+from ..geom import load_trimesh
 from ..steps.faces import SIDES, operations_of  # canonical side order; face index i renders SIDES[i]
 
 POINT_RADIUS = 0.02  # relative to scene extent; larger than Polyscope's tiny default
@@ -103,14 +104,31 @@ def _render_curve(step, context):
 
 
 def _render_surface(step, context):
-    """A reference STL: its triangles, muted and edge-free so it reads as a backdrop to build
-    against, not as mesh output."""
+    """A reference STL surface: its triangles, muted and edge-free so it reads as a backdrop to
+    build against, not as mesh output. The built value is a `cb.TriangulatedSurface`; its trimesh
+    carries the vertices/faces to draw."""
     value = context.get(step)
     if value is None:
         return
-    mesh = ps.register_surface_mesh(step.name, *value)
+    mesh = ps.register_surface_mesh(step.name, value.mesh.vertices, value.mesh.faces)
     mesh.set_color((0.7, 0.7, 0.75))
     mesh.set_edge_width(0.0)
+
+
+def _render_revolved_surface(step, context):
+    """The Revolved STL surface: the loaded STL drawn as a muted backdrop (verbatim, no
+    reconstruction — so a surface that *isn't* a revolution visibly won't match) plus the extracted
+    profile curve. The built value is the profile curve; the mesh comes straight from the file
+    (memoised in `geom.load_trimesh`)."""
+    path = step.values["file"]
+    if path:
+        mesh = load_trimesh(path)
+        backdrop = ps.register_surface_mesh(f"{step.name}::stl", mesh.vertices, mesh.faces)
+        backdrop.set_color((0.7, 0.7, 0.75))
+        backdrop.set_edge_width(0.0)
+    value = context.get(step)
+    if value is not None:
+        ps.register_curve_network(step.name, np.asarray(value.discretize(count=CURVE_SAMPLES), float), "line")
 
 
 def _render_nothing(step, context):
@@ -127,6 +145,7 @@ RENDERERS = {
     "point": _render_point,
     "curve": _render_curve,
     "surface": _render_surface,
+    "revolved_surface": _render_revolved_surface,
 }
 
 
@@ -138,6 +157,8 @@ GEOMETRY = {  # render_kind -> (step, value, context) -> (topology, data); geome
     "sketch_faces": lambda s, v, ctx: ("quad", [f.point_array for f in v.faces]),
     "point": lambda s, v, ctx: ("cloud", [v]),
     "curve": lambda s, v, ctx: ("curve", v.discretize(count=CURVE_SAMPLES)),
+    # the profile curve drives fit/cues; the STL backdrop is excluded from the fit, like "surface"
+    "revolved_surface": lambda s, v, ctx: ("curve", v.discretize(count=CURVE_SAMPLES)),
     # raw resolved positions (like the sketch renderer) so an in-progress/quad-less sketch still
     # shows; refs/expressions resolve through the context, unresolved (None) vertices dropped.
     "sketch": lambda s, v, ctx: ("cloud", [c for c in s.resolved_positions(ctx) if c is not None] or None),

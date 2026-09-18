@@ -20,11 +20,12 @@ import polyscope as ps
 
 _SLICE_NAME = "Scene Slice Plane "  # Polyscope's auto-name for `add_scene_slice_plane`
 _PROBE_TOLERANCE = 3  # stop after this many missing indices in a row
+_DEFAULT_VERBOSITY = 2  # Polyscope's default; the app never changes it, so this is what we restore
 
 
 def _slice_plane(index):
-    """The scene slice plane at `index`, or None — a phantom name yields a handle that raises
-    on first access (`get_slice_plane` only logs), so touching `get_center` is the real test."""
+    """The scene slice plane at `index`, or None — a phantom name yields a handle whose access
+    raises (`get_slice_plane` itself only warns), so touching `get_center` is the real test."""
     try:
         plane = ps.get_slice_plane(f"{_SLICE_NAME}{index}")
         plane.get_center()
@@ -34,16 +35,23 @@ def _slice_plane(index):
 
 
 def _slice_planes():
-    planes, index, misses = [], 0, 0
-    while misses < _PROBE_TOLERANCE:
-        plane = _slice_plane(index)
-        if plane is None:
-            misses += 1
-        else:
-            planes.append(plane)
-            misses = 0
-        index += 1
-    return planes
+    """Enumerate scene slice planes by probing their auto-names (polyscope has no list API),
+    stopping after a few consecutive misses. Verbosity is muted for the probe's duration so a
+    missing name doesn't spam an `[ERROR]` line to the console on every save, then restored."""
+    ps.set_verbosity(0)
+    try:
+        planes, index, misses = [], 0, 0
+        while misses < _PROBE_TOLERANCE:
+            plane = _slice_plane(index)
+            if plane is None:
+                misses += 1
+            else:
+                planes.append(plane)
+                misses = 0
+            index += 1
+        return planes
+    finally:
+        ps.set_verbosity(_DEFAULT_VERBOSITY)
 
 
 def capture():
