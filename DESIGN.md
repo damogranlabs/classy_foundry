@@ -1,1153 +1,248 @@
 # classy_foundry — Design
 
-A [Polyscope](https://polyscope.run/py/) front-end for
-[`classy_blocks`](https://github.com/damogranlabs/classy_blocks), which generates
-OpenFOAM `blockMeshDict` files. Its goal is to make classy_blocks'
-powerful-but-cryptic scripting API accessible through a guided, visual tool. This is
-the **second attempt**; the first was a FreeCAD workbench (same conceptual core,
-different host) — referred to below as "the FreeCAD attempt".
+A topology editor for [`classy_blocks`](https://github.com/damogranlabs/classy_blocks),
+built on [Polyscope](https://polyscope.run/py/).
 
-Polyscope is far more limited than FreeCAD as a GUI host — no document model, no
-property system, no persistence, no CAD kernel. But it is a **mesh-native viewer**,
-which is exactly what this tool needs to show. The design below leans into that:
-keep a GUI-agnostic core, drop everything that only existed to satisfy FreeCAD, and
-let classy_blocks' own geometry drive the display.
+Building *everything* with the mouse takes more steps and more time than scripting it.
+What scripting can't do well is 3D block **topology**: a point/quad net is fine with pen
+and paper in 2D, but laying out points and their connectivity in 3D is painful, and
+maintaining indices by hand as points come and go is worse. So this tool authors nothing
+but topology — points, blocks, patches — and everything else (chops, grading, assembly,
+writing `blockMeshDict`) stays in the user's script, where it is fast.
 
-Verified baseline: `polyscope` 2.6.1 (with full `polyscope.imgui` bindings —
-tables, trees, combos, input fields, drag-drop), `classy_blocks` 1.11.2,
-Python 3.10.
+**Foundry never writes a `blockMeshDict`.** Coordinates it produces are *hints*, not
+truth: `MappedShape` maps patch faces onto real surfaces and optimises afterwards. There
+is no CAD kernel, no work planes, no precision snapping.
 
----
-
-## Running & environment (restart checklist)
-
-- **Dependencies**: `pip install polyscope classy_blocks numpy` (Python 3.10). A GPU /
-  GL context is needed for the live app; headless verification uses Polyscope's
-  CPU-mock backend (below).
-- **Run**: `python -m classy_foundry` from `src/` (entry point is
-  `classy_foundry/__main__.py` → `main()` → `ps.show()`). The package uses **relative**
-  imports (`from .steps … import`, `from ..model import`), so it runs as a module, not a
-  loose script.
-- **Artifacts** are written to the working dir: `model.pkl` (Save / Open),
-  `mesh_script.py` (Export script), `blockMeshDict` (Write blockMeshDict).
-- **classy_blocks local patch — not currently load-bearing.** `transform_matrix(M)` was
-  added to `../classy_blocks/src` (`Point` + `ElementBase`) for an eventual transform
-  gizmo. No implemented step uses it (transforms are deferred), so a stock
-  `pip install classy_blocks` runs everything here. Only when the gizmo lands does this
-  method need to be present (re-apply the patch, or `pip install -e ../classy_blocks`).
-- **Headless tests** (no display): `ps.set_allow_headless_backends(True)` then
-  `ps.init("openGL_mock")`, drive frames with `ps.frame_tick()`. Caveat learned the hard
-  way: widgets behind a `CollapsingHeader`/`TreeNode` don't execute while collapsed, so
-  exercise the inner draw functions (`panel._draw_steps`, `sketch_editor.draw`, …)
-  *directly* in a frame, not via the top-level callback. Real mouse clicks (placement,
-  picking, selection) and visual/layout correctness still need live eyes.
+The design decisions and the reasoning behind them live in
+`docs/superpowers/specs/2026-09-19-topology-editor-design.md`.
 
 ---
 
-## What ports from the FreeCAD attempt, what gets rebuilt
+## Running
 
-The FreeCAD attempt had three layers. Only the middle one is host-independent.
+- **Edit** (a terminal program, from `src/`):
+  `python -m classy_foundry impeller.shape [blade.stl hub.stl ...]` — opens the file, or
+  starts a new one if it doesn't exist yet. Any further arguments are reference surfaces.
+- **Use** (from any script; note it does *not* import foundry):
+  ```python
+  import classy_blocks as cb
+  from classy_foundry.description import MappedShapeDescription   # → classy_blocks, later
 
-| The FreeCAD attempt relied on FreeCAD for… | Polyscope offers | This tool's approach |
+  description = MappedShapeDescription.load("impeller.shape")
+  shape = cb.MappedShape(description.points, description.hexas)
+  ```
+- **Environment**: venv at `/home/nejc/venv/classy_foundry/bin/python` (**not** in-repo).
+  Verified against polyscope 2.6.1 (with full `polyscope.imgui` bindings), classy_blocks
+  1.11.2, trimesh, numpy, Python 3.10. The package floor is 3.9, so annotations use
+  `Optional[X]`, never `X | Y`.
+
+The editor is reachable **only** from the command line. It is not called from a meshing
+script: that script runs dozens of times and the editor would block every run, and it
+would force the script to be re-edited to change anything about the topology. Nothing
+imports `classy_foundry` as a library — `__init__.py` is empty on purpose.
+
+## Reference surfaces
+
+An STL is loaded by **dragging it onto the window** (Polyscope's `set_files_dropped_callback`
+— there is no file dialog in Polyscope or its imgui, and this is better than one), or by
+naming it on the command line. Either way it becomes a patch named after the file
+(`blade.stl` → `blade`) carrying it as its surface, so it is saved with the document and
+comes back next session without the argument. Dropping the same name again re-points that
+one patch rather than adding another, and a patch that already has faces simply gains the
+surface.
+
+The mesh is what points snap to (`Ctrl` during a move) and what the topology is built
+against. A path whose file has moved is skipped rather than raising — paths arrive from
+drops, the command line and a text field, so a bad one must not kill the frame callback —
+and the patch panel says so in red.
+
+## SpaceMouse
+
+A 3Dconnexion puck drives **the camera only** — points and blocks stay the mouse's job —
+and it is optional: if `spacenavd` isn't running, `Navigator.attach()` returns `None` and
+nothing else changes.
+
+It talks to spacenavd's UNIX socket directly, with no `libspnav`, no ctypes and no new
+dependency: a packet is eight little-endian `int32`s, `[type, x, y, z, rx, ry, rz, period]`,
+type 0 for motion, and a proto-v0 client receives motion events with no handshake
+(spacenavd `src/proto_unix.c`, `src/client.c`). Axis values are the puck's *absolute*
+deflection, so a poll keeps the newest packet and drops the backlog — accumulating would
+build a lag the hand can feel.
+
+**Two modes**, the classic 3Dconnexion split, chosen in the Navigation panel. They differ
+in what the rotation pivots about, what a dolly does, and the sign of every axis:
+
+- **Object** (the default): the puck moves *the model*. Push right and the model goes
+  right, so the camera goes left; rotation orbits the model, which stays in the middle of
+  the view; a dolly changes the distance and is clamped, so you can never zoom through the
+  thing you are building.
+- **Camera**: the puck moves *the eye*. Push right and the camera goes right; rotation
+  turns the gaze from where it stands; a dolly flies, target and all, through the scene.
+
+They are two small strategy classes, so `navigate` asks the mode rather than branching on
+it. Both preserve `up`, so the horizon never rolls and the model never ends up upside
+down — which is why puck roll (rz) is unmapped.
+
+| deflection | object mode | camera mode |
 |---|---|---|
-| Document/Proxy + typed Properties (persistence) | nothing | **pickle the step list** (see below) |
-| Dependency graph (InList/OutList) | nothing | plain Python references between steps; list order is already a valid codegen order |
-| Auto-generated property editor | raw ImGui widgets | schema-driven panels — one `SCHEMA` per step type |
-| Coin3D 3D view + element picking | structure registration + `polyscope.pick` | rebuild interaction via Polyscope picking + ray/plane math |
-| `Part.*` kernel for Tier A/B preview | mesh-native viewer | **classy_blocks' own geometry** drives the display |
+| x / y | slide the model sideways / vertically | pan the eye |
+| z | pull the cap back to push the model away | fly backwards |
+| rx | tilt the model (clipped short of the pole) | look up/down |
+| ry | spin the model about `up` | look left/right |
+| rz | unused | unused |
 
-**Layer 2 — the classy_blocks-wrapping logic — ports essentially unchanged** (it is
-host-independent), *minus* FreeCAD's `*Proxy` glue that hand-wrote `addProperty(...)`
-and duplicated each constructor signature. Here that logic lives in the **step
-types**: a producing step wraps a `cb` class, builds the live `cb` value, and emits
-its own `to_lines()`.
+Speeds are in **scene extents per second** (`Document.extent`), so a blade and a bridge
+handle the same. Every sensitivity is signed, and the panel's sliders run through
+zero: **a negative value inverts that axis**, which is the fix when one control feels
+backwards in an otherwise correct mode. Tuning is live, because the feel of this cannot be
+read off a number.
 
-**Schema-driven (decided).** Each step type declares **one** declarative `SCHEMA` — an
-ordered map of `field → {kind, label, default, choices}`, where `kind` may be a scalar
-(`point3`, `float`, …) or a **`ref`** to an ancestor step. A single set of registries
-reads it:
+The only state is how far ahead the pivot sits; position and direction are read from
+polyscope every frame, and the camera is written back only while the puck is deflected. So
+ordinary mouse navigation and the puck cooperate — a mouse orbit simply carries the pivot
+along in front of the camera — and a still device never overrides the mouse.
 
-- `kind → ImGui widget` renders the step's editor (no per-type UI code, no
-  `if kind == ...` chains); a `ref` renders as a dropdown of eligible ancestors.
-- The same schema drives `build()`, the pickled recipe fields, and `to_lines()`.
+## The document
 
-So adding a step type = declare a `SCHEMA` (+ a `build()`/`to_lines()` for its cb
-mapping); the generic UI, persistence, and codegen pick it up for free. This keeps the
-GUI a thin generic layer over the logic, per the DRY / no-`if` / GUI-separation
-principles in `claude.md`.
-
----
-
-## Document model — pickle the steps; script is one-way export
-
-The persisted document is a **pickle of `{steps, scene}`**. Save = `pickle.dump` the step
-list plus an opaque **scene** blob; Load = `pickle.load` it back. Parsing Python source back
-into Python objects is fragile and pointless when the objects can be serialized directly, so
-there is no exec/round-trip load. (A bare-list pickle from before the `scene` field still
-loads — `load` detects the dict vs. list shape — so old documents keep working.)
-
-**Scene state (implemented).** Polyscope persists none of its scene across sessions (its
-`.polyscope.ini` is only window geometry + UI scale), so the savable, non-appearance parts
-ride in the pickle's `scene` blob: the whole **camera** in one string (`get_view_as_json` —
-viewpoint, up/front dir, fov, projection, nav style) and each **slice plane**'s pose + flags
-(the cross-section cuts). The blob is captured/applied by `view/scene.py` (the only side that
-touches `polyscope`); `model` stores it **verbatim and uninterpreted**, so the one-way
-`view → model` rule holds — `model` never imports `polyscope`. Excluded on purpose: the
-**ground plane** (all its setters are write-only — nothing to read back) and **appearance**
-(background, per-structure colours — the latter also fights the per-rebuild re-registration).
-Slice planes have no enumeration API, so they're found by probing their auto-names
-(`Scene Slice Plane N`) with a small consecutive-miss tolerance.
-
-The classy_blocks Python script remains a **one-way export** (`to_lines()` over the
-ordered steps): the portable, hand-editable/runnable artifact a user takes to produce
-`blockMeshDict` or version in git. It is generated *from* the step list, never read
-back into it.
-
-What gets pickled is each step's **recipe**, not derived geometry: its scalar inputs +
-references to ancestor steps (by identity). Live `cb` values and viewport structures are
-rebuilt from the steps on load via a recompute — the same declarative replay used on
-every edit — so the pickle stays small and version-tolerant, and we never pickle
-classy_blocks' internal geometry objects.
-
-Implication for step classes: they must pickle cleanly — restrict any
-`__getstate__`/`__setstate__` to recipe fields; never persist the computed `cb` value.
-(A schema-version int in the pickle guards against future field changes.)
-
-**Units**: plain unitless numbers throughout — dimensional values are plain floats, no
-unit conversion at the classy_blocks boundary. Scale is handled by classy_blocks' own
-`mesh.settings.scale`.
-
-**Numeric fields are expression strings (implemented).** A scalar `float`/`int` field
-stores its value as a **string** (`"pi/2"`, `"deg2rad(90)"`, `"5*2"`), not a number — so
-angles/distances/counts read naturally and the exported script stays hand-written-looking
-(`cb.Revolve(face, pi/2, …)`). It is evaluated in a **math-only namespace** (`eval_expr`,
-a restricted `eval` over a curated set of `numpy` names — `pi`, `sin`, `deg2rad`, …) at
-**build** time, and emitted **verbatim** in codegen; the exported script imports those
-names (`expr_import_line()` → `from numpy import …`). A bad/mid-edit expression simply
-fails to build (best-effort, so the step just drops out of the preview until it parses) —
-but the failure is **surfaced, not silent** (see **Build errors** below), so a genuinely
-broken step reads as an error rather than a vanished one. Numbers still pass through
-unchanged, so old pickles/defaults keep working. This is the
-one place a "plain float" is deliberately a string — and it stays inside the schema-driven
-path (a `kind`, a `WIDGETS` text entry, a `RESOLVE`/`CODEGEN` pair), no special-casing.
-
-**Float parameters — named numbers the model is built on (implemented).** A `Parameter`
-step (`steps/parameter.py`, category `References`, palette label **Float**) is a plain
-`ValueStep` holding one `float` field, so it reads/edits/pickles/codegens like any other
-step — `ValueStep` already emits `name = <expr>`, so `bore = 86` / `radius = bore/2` fall
-out of the existing codegen with *no* new path. The one addition is that a parameter's
-**name enters the expression namespace**: `BuildContext` grows a `params` map, each
-`Parameter.build` evaluates its expression (over the params defined *above* it, so
-parameters compose) and publishes `name → value`, and `eval_expr(value, params)` merges
-those over `EXPR_NAMESPACE` (params win, so a user name can shadow a math name). So every
-downstream numeric field reads `bore/2` as naturally as `pi/2`, and the exported script —
-parameters emitted verbatim at the top in list order — is a genuinely parametric,
-hand-editable classy_blocks script. `render_kind=None` (a scalar draws nothing).
-
-Parameters are referenced **by name in a string**, not by identity, so they are invisible
-to the identity-based forward-ref guard and to `model.remove`'s reference check. A field
-that reads a parameter defined below it (or later deleted) simply fails to build and drops
-from the preview — the same best-effort leniency as any bad expression, no new machinery.
-Keeping them out of the identity-ref graph is deliberate: a parameter is a scalar for
-expressions only, never a `point`/`ref` target, so it never appears in those dropdowns.
-
----
-
-## Data model — the step list
-
-The document is a `Model` holding one ordered `steps` list. Each **step** is a small
-Python object with:
-
-- a stable `name` — its codegen output variable and display id;
-- typed **inputs** per its `SCHEMA` — scalars *and* references to ancestor steps;
-- `build()` — produce or configure the live `cb` value;
-- `to_lines()` — the step's statement(s).
-
-Four build patterns, treated uniformly (full detail in **Step class hierarchy**):
-
-- **Producing** — `name = cb.Cls(...)`: outputs a *new* `cb` value (Box, Face,
-  MappedSketch, catalogue shapes, …). Args may be `ref`s or point inputs.
-- **Value** — `name = <literal>`: a named literal other steps reference (Single point).
-- **Configuring** — `<ref>.method(...)`: mutates an ancestor in place; output *is*
-  that same value (chop, set_patch, translate, project, …).
-- **Deriving** — `name = <ref>.method(...)`: a *new* value produced from an ancestor
-  (copy, extract-face).
-
-**`SCHEMA` gains a `ref` kind** — a *whole-field* reference to an ancestor step,
-optionally constrained by what that ancestor produces (e.g. an `Extrude`'s profile
-input accepts a Face step — or a predicate, e.g. a `Chop`'s target accepts any
-operation). The schema→widget registry renders a `ref` as a dropdown of eligible
-ancestors; codegen emits the referenced step's output `name`.
-
-**Point inputs (`point` / `point_list`) are reference-or-literal *per entry*.** A point
-value is either a literal `[x, y, z]` or a `Point` step (a per-entry reference) — both
-resolve to coordinates. So a Face can mix referenced corners with manually-typed ones:
-`profile = cb.Face([origin, [1, 0, 0], corner_b, [0, 1, 0]])`. Two small registries do
-the work uniformly for every step: `RESOLVE` (value → live `cb` arg at build) and
-`REF_EXTRACT` (the embedded refs, so rename-safety and the forward-ref check cover
-them). This is the natural extension of the schema-driven design — adding a step type is
-still "declare a `SCHEMA`."
-
-**A point literal is an expression *vector* (implemented).** A literal coordinate is not a
-bare number triple but an **expression string that evaluates to a 3-vector** — `[bore/2, 0,
-h]` — the point analogue of the numeric field's `pi/2`. So a point coordinate can read the
-float **Parameters** (and math names) exactly as a scalar field does, and codegen emits it
-verbatim (`apex = [bore/2, 0, h]`), keeping the exported script genuinely parametric. One
-helper carries it — `eval_vec(value, params)`, the vector twin of `eval_expr`: a *string*
-evaluates in the math+params namespace, a list/tuple (a placed/snapshot point, a default, a
-legacy pickle) passes through as floats, so nothing old breaks. It stays inside the
-schema-driven path — `RESOLVE`/`CODEGEN` for `point3` and for each `point`/`point_list`
-entry, a single `WIDGETS`/panel text field (`vec_text`), no special-casing — and the same
-`point3` fields that were fixed axes/normals (`Revolve.axis`, a plane normal) are now
-parametric for free. The `Point` `ValueStep` resolves its field through the same `RESOLVE`,
-so a referenced `Point` still hands downstream steps concrete coordinates. Placement via the
-viewport (dropper, sketcher) still writes plain numeric lists — the string form is what you
-*type* when you want a coordinate driven by a parameter.
-
-**Parametric sketch vertices (implemented).** A `MappedSketch`'s `positions` is a
-`point_list`, so the above applies there too: a sketch vertex can be typed `[bore/2, 0, 0]`
-and tracks its parameter, while a **snapshot** of a reference point (the sketcher's
-click-reuse) still stores a plain numeric list — so the sketch stays a plain position list
-that transforms rigidly (the deliberate stance in **Interaction primitives**; an expression
-is evaluated to a fixed coord at build, so it doesn't reintroduce a live binding). The raw
-render / overlay / number-labels resolve through `MappedSketch.resolved_positions(params)`
-(a mid-edit un-evaluable coord falls back to the origin so quad indices stay aligned); the
-cue/fit path (`geometry_of`, now threaded the build's `params`) resolves the same way, so an
-in-progress, quad-less sketch still frames and highlights.
-
-**`points_file` kind (implemented).** A field that holds a **file path** to a list of 3D
-points; `RESOLVE` loads it with `numpy.loadtxt` at build, `CODEGEN` emits
-`np.loadtxt('path')` (the script gains `import numpy as np`). Used by the **Points file**
-reference curve (`cb.LinearInterpolatedCurve`). The recipe stays a tiny path — the points
-re-load from the file on every build and in the exported script, so editing the file flows
-through (no baked points; flag if a "freeze" option is ever wanted).
-
-**Ordering & references.** A step may reference only ancestors, so the list order is
-already a valid codegen order — no separate topo-sort, just a no-forward-reference
-check. `build()` replays the list to reconstruct live `cb` values; **pickle persists
-the step list** (recipe only — scalars + references by identity, never `cb` geometry),
-same declarative-replay property as before. See **Naming** for how references stay
-rename-safe.
-
-**Build errors are surfaced, not silent (implemented).** `model.build` is best-effort — a step
-that raises is skipped so a partial model still displays — but the exception is **recorded** on
-the build context (`BuildContext.errors`, `{step: exception}`) instead of discarded. The panel
-reads that map (`_build_errors`, off the stashed `session["context"]`) and flags each failed step:
-a red **(!)** on its row (the exception on hover) and the full `Type: message` above its editor
-while it's active. This is what turns "the curve just isn't there" into "`FileNotFoundError:
-foo.pts not found`" — the class of bug where a mistyped path / bad expression / unsatisfied ref
-vanished with no feedback. (A fuller shared **console** — also serving write/optimizer output — is
-still deferred; this is the lightweight per-step version.) **Reference-data paths are resolved
-relative to the process working directory** (`np.loadtxt`), emitted verbatim in codegen, so a
-`points_file` must be reachable from where the app runs (`src/` per the run checklist) — an
-absolute path, or one relative to that dir; a bare filename in the repo root won't resolve from
-`src/`, and now says so.
-
-**The mesh.** There is one implicit mesh. Mesh-level steps (the auto-graders, later a
-mesh optimizer/smoother) act on it via the `apply_to_mesh` hook (run after every
-`mesh.add`; see **Step class hierarchy**). Whether `set_default_patch` / `scale` /
-geometry become explicit mesh steps or stay implicit is part of categorizing the
-palette — **deferred**.
-
-**Transforms are just a (configuring) step.** The detailed transform UI — gizmo vs.
-numeric, in-place vs. derived copy/array — is **not yet settled and deliberately left
-open**. `cb.ElementBase.transform_matrix(M)` was added to classy_blocks as a lossless
-4×4 bridge for an eventual gizmo (additive, not yet load-bearing — revertible if no
-gizmo is ever wired).
-
----
-
-## Step class hierarchy (decided)
-
-The step *types* are a proper class hierarchy: shared behaviour (build, codegen,
-structure) lives in base classes, and a concrete step adds only what differs — a few
-declarative class attrs plus its `SCHEMA`. No `build()`/`to_lines()` code is ever
-repeated. `Box` and `MappedSketch` already demonstrate this (each ~5 declarative lines,
-no logic of their own).
-
-This is the **OO half** of the design. The *functional* code elsewhere — the
-`CODEGEN`, `WIDGETS`, `RENDERERS`, and `catalog` registries — is **dispatch tables that
-replace `if/elif` chains, not duplication**; every entry is unique. The rule: domain
-types → inheritance; cross-cutting dispatch → data tables.
-
-### Build-pattern base classes
-
-Each base implements `build()` + `to_lines()` **once**, parameterised by a class attr:
-
-| Base | Codegen shape | Declares | Palette members |
-|---|---|---|---|
-| `ProducingStep` *(exists)* | `name = cb.Cls(args…)` (args may be `ref`s/points) | `cb_name` | Face, MappedSketch, all Sketch-catalogue, Box/Extrude/Rotate/Loft/Wedge, all Shapes & Stacks, all Solid-catalogue |
-| `ValueStep` *(exists)* | `name = <literal>` (single field is the output) | — | Single point |
-| `ConfiguringStep` *(exists)* | `<ref>.method(args…)` (in-place; output = target) | `cb_method` | Translate, Rotate, Scale, Project, Set patch, Grade axis (chop), Grade edge |
-| `DerivedStep` *(exists)* | `name = <ref>.method(args…)` (new value from an ancestor) | `cb_method` | **Point on curve** *(done)*, copy. (Extract face turned out to fit the **face-picker** better — a `face` input + custom build — than a method-on-ref.) |
-| `HelperStep` *(exists)* | `name = cb.Cls(target, args…)` then `name.<call>()` (helper object + finishing call) | `cb_name`, `cb_call` | auto-graders *(done)*, mesh/sketch/shape **smoothers** (optimizers split into producing + clamp/optimize steps — see **Optimization**) |
-
-**`HelperStep` — the "helper object + call" family (decided).** classy_blocks' graders,
-optimizers, and smoothers all share one shape: *wrap a target in a helper, then call a
-finishing method* (`cb.FixedCountGrader(mesh).grade()`, `cb.SketchSmoother(s).smooth()`,
-`cb.SketchOptimizer(s)…optimize()`). So they share **one** base, `HelperStep`, parameterised
-by `cb_name` (helper class) + `cb_call` (the finishing method). (Optimizers are the one
-exception — clamps land *between* construction and `optimize()`, so they decompose into
-separate steps rather than a single helper-and-call; see the **Extra body** note below.)
-Two orthogonal axes inside the family, each added with its first member (YAGNI):
-
-- **Target = mesh vs element.** Mesh-targeted helpers (auto-graders, `MeshOptimizer`) act on
-  the whole assembled mesh, so they run in the `apply_to_mesh` hook (a base **no-op**,
-  overridden here), once per step *after* every `mesh.add` (`model.build_mesh`), and draw
-  nothing. Element-targeted helpers (`Sketch`/`ShapeOptimizer`/`Smoother`) take a `ref`
-  target and run in the normal build pass — *added when the first optimizer lands*.
-- **Extra body → separate steps (revised).** Graders/smoothers are a bare `helper; call()`,
-  so they fit `HelperStep` directly. Optimizers do **not**: `add_clamp` calls and the final
-  `optimize()` are *separate steps* (an optimizer **producing** step, per-kind **clamp**
-  configuring steps, an **optimize** configuring step). Smart points were rejected (see
-  **Optimization & smoothing → Clamps are explicit steps**), so there is no `AutoOptimizer`
-  and nothing extends `HelperStep` here.
-
-**Manual chop is not in this family.** `op.chop(axis, count)` is a method on the target
-in place — `ConfiguringStep`, no helper object. It stays there, unchanged.
-
-One pattern still gets its own small base when its first member lands:
-
-- mesh-level **config** — default patch / scale act on the mesh (also via `apply_to_mesh`).
-
-**Marker sub-bases under `ProducingStep` (implemented).** Where a family shares attrs
-*and* needs a common type for `accepts`, a thin intermediate base carries both — no
-`build()`/`to_lines()` logic, just declarations:
-
-- `SketchStep` (`render_kind="sketch_faces"`, `adds_to_mesh=False`) — the flat-sketch
-  family. `DiskSketch` adds the `(centre, rim, normal)` schema the round disks share;
-  `MappedSketch` also subclasses it (overriding to its own `"sketch"` raw renderer), so a
-  hand-built sketch is accepted wherever the catalogue disks are.
-- `ShapeStep` (`render_kind="shape"`, `adds_to_mesh=True`) — swept solids. `CatalogueShape`
-  adds the round-solid submenu path. A shape's sketch input is `accepts=SketchStep`.
-
-So a Shape accepts *any* sketch (catalogue or `MappedSketch`) by `accepts=SketchStep`, and
-the marker base is the single source of that "is-a sketch/shape" truth.
-
-### A concrete step is pure declaration
+The topology is an object graph in which **nothing above `storage.py` holds an index**.
+Adding or deleting a point renumbers nothing, because there are no numbers.
 
 ```python
-class Cylinder(ProducingStep):
-    cb_name = "Cylinder"
-    category = ("Solids", "Catalogue")   # palette path (nested submenus)
-    label = "Cylinder"                   # menu label
-    render_kind = "operation"            # display dispatch
-    SCHEMA = {...}
+Point(position)                       # a vertex; a hint, not precision geometry
+Cell(points)                          # 8 points (hex) or 4 (quad — the MappedSketch case)
+Patch(name, faces, surface)           # faces are 4-point tuples; surface is a file path
 ```
 
-`build()`, `to_lines()`, the property panel, persistence, and display all come from the
-base + registries. Adding the dozens of catalogue entries is just such declarations
-plus one `catalog` line.
-
-### Display dispatch stays DRY
-
-A step declares a `render_kind` string (`"operation"`, `"sketch"`, `"sketch_faces"`,
-`"shape"`, `"face"`, `"point"`, `"curve"`, or `None`); `RENDERERS` maps that string → one
-renderer, so every operation type shares one renderer — declared, not coded per type.
-Steps stay free of `polyscope` (the renderer lives in `view`, keyed by the declared
-string), so the one-way `view → model` rule holds.
-
-### Gradual, not speculative
-
-Each base is added **when its first member is implemented** (YAGNI): `ProducingStep`,
-`ValueStep`, `ConfiguringStep`, and `HelperStep` (its first members are the auto-graders)
-exist; `DerivedStep` now exists too (first member: `OnCurvePoint`), and `HelperStep`'s element-targeted /
-clamp-carrying branches with the first optimizer. This hierarchy is the plan the
-incremental work follows.
-
----
-
-## Naming (decided)
-
-Every step has a user-facing **name** that *is* its script variable, so the exported
-script reads like hand-written classy_blocks (`leading_edge = cb.Face(...)`,
-`channel = cb.Extrude(leading_edge, ...)`). Naming is first-class and user-driven, not
-generic-with-a-number.
-
-- **One name = the variable.** It must be a valid Python identifier and unique among
-  steps. Invalid input is rejected/sanitized inline; uniqueness is enforced by a
-  `model.rename(step, new)` helper (logic, not view). No separate label/Name split.
-- **Default, then rename freely.** A new step gets a type-based default (`face`, then
-  `face_1` on collision), shown prominently and editable on its step line. Naming is
-  encouraged but **never blocks** the build.
-- **Name is chrome, not `SCHEMA`.** It is the step's identity/output, handled
-  uniformly by the step framework on every line — orthogonal to the per-type `SCHEMA`
-  inputs. (So `SCHEMA` stays purely the typed inputs.)
-- **References are by identity, not by name.** A `ref` input stores the *step object*;
-  codegen resolves it to that step's *current* name. Renaming is therefore safe — it
-  just changes the emitted variable everywhere, with nothing to repair (pickle
-  preserves the shared object references). The name is purely a display/codegen
-  attribute; identity is the link.
-
-The name is also the Polyscope structure id and the step's display label — one string,
-three uses, all satisfied by "valid identifier."
-
----
-
-## Display — per-step, from each step's own geometry
-
-Each step renders **from its own built `cb` value (or raw data)**, not from
-`mesh.assemble()` — so the viewport works even while the mesh is incomplete or not
-validly connected (assemble would refuse). `sync_display` builds the model once into a
-context `{step: cb_value}`, wipes (`reset_selection` + `remove_all_structures`), draws the
-**world-axes triad**, then renders each step via a `render_kind → renderer` registry (see
-**Step class hierarchy**), and finally re-adds the editor's transient overlay. Each renderer
-runs inside a per-step `try/except` — **best-effort, mirroring `model.build`** — so one step
-whose renderer raises (a mid-edit expression, a stale quad index, degenerate geometry) drops
-out silently instead of blanking every step after it in the loop. (The `sketch` renderer is
-the one that draws from *raw* recipe data rather than the guarded build value, so it is the
-usual beneficiary; `MappedSketch.resolved_positions` additionally coerces every vertex to a
-valid 3-vector, origin-filling a bad one, so a parametric coordinate can't throw here at all.)
-
-A shared `_quad_mesh(point_arrays)` helper builds `(vertices, quad_faces)` from a list of
-4-point arrays — reused by the operation, face, sketch-faces, and shape renderers (one quad
-per array), so the quad-building lives in one place.
-
-Renderers (keyed by the step's declared `render_kind`):
-
-- `"operation"` (Box, Extrude, Revolve, Loft, Wedge) — a 6-quad surface from
-  `op.get_face(side)` for `side ∈ {bottom, top, left, right, front, back}`. **Those names
-  are classy_blocks' patch orientations**, so a picked face maps straight to a patch side —
-  no axis/orientation index to memorize (the basis for the future grade/tag-by-pick).
-- `"sketch"` (MappedSketch) — a pickable point cloud + a quad surface, drawn from the
-  step's *raw* positions/quads so an in-progress (unbuildable) sketch still shows.
-- `"sketch_faces"` (catalogue disks/oval) — the quad surface of the built sketch's
-  `.faces` (each a `point_array`).
-- `"shape"` (ExtrudedShape/Revolved/Lofted, Cylinder, …) — the six named sides of *each*
-  operation in `shape.operations`.
-- `"face"` (Face) — a single flat quad from `face.point_array`.
-- `"point"` (Point) — a one-point cloud.
-- `"curve"` (Points-file curve) — a polyline through `curve.discretize(CURVE_SAMPLES)` via
-  `register_curve_network(name, nodes, "line")`.
-- `None` (configuring steps like Chop) — nothing.
-
-**World-axes triad (implemented).** An origin gizmo — three ambient vector quantities on an
-origin point cloud, x=red/y=green/z=blue (the colour tuple *is* the unit direction) — re-added
-every rebuild inside `sync_display` (not the overlay slot, which the sketcher owns). Its
-structure name has a space (`"world axes"`), so it can never collide with a step name or resolve
-as a selection. Polyscope has **no built-in world-axes gizmo**; this is the ~5-line
-vector-quantity substitute. Its length is `0.5 · get_length_scale()`, so it tracks the current
-scene extent (see **Scene environment** below) — legible on any model.
-
-**Block borders (implemented).** Every block surface — the sketch's quad mesh and each
-operation/shape's side quads — registers with `set_edge_width(1.0)` (Polyscope's own edge-width
-setting), so blocks read as bordered cells by default instead of a flat merged surface.
-
-**Number labels — `view/labels.py` (implemented).** Polyscope has **no native text/label
-quantity**, so numbers that must sit *at* a world point are drawn ourselves: `draw_labels`
-projects world points to ImGui screen space via the view camera's own matrices
-(`get_view_mat` + fov/aspect → the standard perspective divide; points behind the camera go NaN
-and are skipped) and writes each with the **ImGui foreground draw list** (`AddText`). Because it
-is camera-dependent it runs **every frame from the app callback** (like `cues`), not in the
-rebuild. Its first use is the **sketch number overlay** (`sketch_editor.draw_number_labels`,
-drawn only while the active step is a `MappedSketch`): the **point index** at each vertex (light
-blue) and the **block index** at each quad centroid (amber) — so the points/quads tables'
-index-based editing (a quad *is* four point indices) reads straight off the viewport. Its second
-use is **`draw_clusters`** — a small row of glyphs beside an edge (laid out along the edge's screen
-direction, nudged perpendicular so it never covers the pickable curve), which the edge overlay uses
-for its kind/chop indicators (see **Edges**). This is the same projection any future world-anchored
-label (patch names, dimensions) would reuse.
-
-**Scene environment — Polyscope's defaults (decided, reversed).** The app does **no** scene-extent
-management: it never calls `set_automatically_compute_scene_extents(False)`, sets no bounding box or
-length scale, and pins no ground. Polyscope's own auto-fit owns the scene — it re-fits to the data
-on every structure change (and the app *does* `remove_all_structures` + re-add on every edit), so the
-length scale, camera, ground, and triad track whatever geometry is currently built.
-
-An earlier design **owned the extents** (`pin_scene` = fixed default world + `shadow_only` ground;
-`fit_view`/`model_bounds` framed the model once at startup) to stop the length scale/ground/camera
-from lurching as geometry changed. That was **removed**: with a pinned world *and* auto-compute off,
-newly added geometry at a very different scale — e.g. a real airfoil `.pts` curve ~0.03 across in a
-scene pinned to ~3 — became an unreachable speck (Polyscope's own reset-view frames the *pinned* box,
-not the data, so nothing could re-frame onto it). Handing the scene back to Polyscope's default
-auto-fit means the view always tracks the built geometry's actual scale, with no app-side fit
-machinery to maintain. The lurch-on-rebuild the pinning avoided is accepted as the lesser cost. So
-there is no `pin_scene`/`fit_view`/`model_bounds` and no app Fit button. (`geometry_of` —
-`render_kind → (topology, data)` — remains, now shared just by the renderers and the cue overlay.)
-
-This replaces the FreeCAD attempt's two-tier `Part.*` scheme. (The fully assembled & graded
-cell mesh from `mesh.assemble()` could be an optional on-demand "show final cells" view
-later, but it is not the working display.) Edge display is **not** a passive per-step renderer
-— an edge step produces nothing of its own (`render_kind = None`). Instead the block/face edges
-are drawn as a **pickable, per-frame overlay while an Edge step is active** (`view/edges.py`, see
-**Edges** below), the same tool-scoped pattern as the cue overlay.
-
-### Visual cues — pre/selection highlighting (`view/cues.py`, done)
-
-The general highlighting workflow, **holding for every step type**. It is deliberately
-tool-scoped, not ambient:
-
-**No selection in normal mode (decided).** When you are not adding/editing a step, a bare
-viewport click selects nothing and changes nothing — the active step (whose panel is open) is
-chosen **only from the step list**. Selection — assigning an element to a tool input — happens
-*only* inside a step being edited, via that input's **pick** button (viewport) or its
-**dropdown** (list); the two are front-ends to one operation. This removed the old ambient
-viewport→list mirror *and* the `last_selection` pre-seed hack (both existed only to reconcile an
-ambient selection with picking, which no longer coexist — a net simplification; `selection.py`
-is gone).
-
-**Cues are sourced from the active step, per frame.** `cues.update_cues` derives a set of
-`(element, role)` and draws each as a **reserved-name overlay structure** (`"cue N"` — a space
-=> never a step name / selection, like `"world axes"`), *after* `sync_display` so the cues
-survive its `remove_all_structures`. An *element* is a `Step` (its whole output), a `FaceRef`
-(one face), or a literal `("point", [x,y,z])`; geometry comes from the cached build context
-(`session["context"]`, the `{step: cb_value}` map `sync_display` now returns) and reuses
-`display`'s primitives (`element_quads`, `_quad_mesh`, `POINT_RADIUS`). Four roles, by colour:
-
-- **output** (calm blue) — the active step's own produced geometry, so you see what you edit;
-- **input** (green) — *every* ancestor element the active step references (what it consumes);
-- **focus** (orange) — the one input whose pick is currently armed, drawn stronger.
-
-**Hover *preselection* was tried and dropped (decided).** A per-frame `ps.pick` at the cursor
-(viewport, while armed) plus dropdown-entry hover fed a pale-yellow candidate cue. In live use it
-*flickered* and *blocked the committing click*, and the static highlighting above already reads
-clearly — so it was reverted entirely (no `hover_preselect`, no `session["preselect"]`). The
-framework still accommodates it cheaply if ever revisited.
-
-Dispatch is table-driven throughout (no `if`-chains, mirroring `display.RENDERERS`): `render_kind
-→ geometry` (`GEOMETRY`), `element type → geometry` (`ELEMENTS`), schema `kind → field elements`
-(`FIELD_ELEMENTS`), `topology → register` (`RENDER`). A **single face/point** renders as a filled
-glow (lifted toward the camera so it neither z-fights nor is occluded); a **whole solid** renders
-as a wireframe outline, so many simultaneous highlights stay legible. Colours/sizes are tunable
-constants. **Edges** now participate: an `EdgeRef` input resolves to `"curve"` geometry
-(`ELEMENTS[EdgeRef]`, plus a `FIELD_ELEMENTS["edge"]` entry), so a step's picked target edge
-highlights green like any other input. The *pickable* edge overlay and its kind/chop indicators
-are a separate tool-scoped mechanism — see **Edges** below.
-
-### Edges — pickable overlay + edge steps (`view/edges.py`, `steps/edge.py`, done)
-
-An edge is **straight by default**; an **edge step** sets an `EdgeData` on one picked edge via
-classy_blocks' `add_edge` API. Deleting the step restores the straight edge, so there is no "line"
-kind. The design is deliberately symmetric across the two edge owners:
-
-- **Operation block-edges** — `op.add_edge(corner_1, corner_2, data)`. The target is an `EdgeRef`
-  (a `SolidRef`, stride 12): a step reference + a flat per-operation edge index → its two corners
-  via `EDGE_PAIRS`. Palette: `("Solids", "Add edge")`.
-- **Flat-face edges** — `face.add_edge(corner, data)`. The target is a `FaceEdgeRef` (`face * 4 +
-  corner`); `faces_of` unifies a bare `Face` and a sketch's many faces. Palette: `("Flat", "Add
-  edge")`. Restricted to hand-laid faces (`Face`, `MappedSketch`) — the disk catalogue generates
-  its own rim curvature.
-
-**One `_KINDS` table, two targets.** The five edge-data kinds — Arc, Origin, Angle, Project,
-OnCurve — are each declared once (cb class + label + its positional arg fields), and a
-`_family(prefix, target, category)` factory generates *both* the operation and the face subclass of
-each from that single table (`type(...)`, bound to the module namespace so pickled recipes resolve
-by `edge.<Name>`). `EdgeStep` is blind to which owner it targets — it just calls the ref's
-`apply_edge`/`add_edge_line` — so the two families are the same kinds pointed at different targets,
-no per-kind duplication (the clamp-step dispatch pattern again). **`OnCurve`** is the curved kind:
-a spline/polyLine (a `choice` field) follows a reference **`CurveStep`** (which carries the
-through-points), so there are no inline point tables — the curve foundation the roadmap flagged.
-
-**The overlay (`view/edges.py`).** While `session["active"]` is an `EdgeStep`, every valid target
-(`model.candidates` for the target field — so overlay and pick accept the same things) draws its
-edges as a **pickable curve network**, re-registered every frame from the cached build context
-(reserved `"…::edges"` names, like the cues overlay, so they survive rebuilds and vanish when
-another step is selected). A curve-network pick returns `element_type == "edge"` + a flat index
-natively, so a click builds the `EdgeRef`/`FaceEdgeRef` directly (`picker.PICK_REFS` gains
-`edge`/`face_edge`). Each edge also shows a **glyph cluster** via `draw_clusters`: its `EdgeData`
-kind (one glyph, nothing for straight) plus, on an operation, one `#` per **edge-chop**
-(`op.chops.edge_chops` — the hook the future **Grade edge** step will fill). No ambient edge
-clutter — edges show only while being edited, matching the cue philosophy.
-
----
-
-## Authoring model — one list of steps (decided)
-
-This is the spine of the whole UI.
-
-### The acceptance test
-
-A GUI over classy_blocks is worth building **only where it is clearer than typing the
-equivalent line.** classy_blocks' crypticness is **spatial and index-based** —
-tracking which point is index 7, which axis is `0`, which side is `'left'`,
-visualizing a rotation — **not textual**. So every affordance must remove a
-*spatial/index* burden. If it doesn't, we don't build it; we just show the line.
-A prettier text interface is not a win — the line was never the hard part.
-
-### There are no UI sections — only steps
-
-Just as a programmer writes the script in any order, the user builds in any order. The
-entire document is **one ordered list of steps**, and nothing else. The earlier
-Sources / References / Objects / Mesh sections are **abandoned**: they divided things
-by *category*, but a flat list of steps needs no such division. Dividing the UI into
-sections turned out to be both unnecessary and impossible to do cleanly — so we don't.
-
-### A step is one statement
-
-Each step has:
-
-- **inputs** — its scalar parameters *plus* references to the outputs of **ancestor**
-  steps (a step may reference only steps above it, exactly like a script);
-- **output** — the value it produces, which later steps can reference.
-
-A **producing** step (`face = cb.Face(...)`, `op = cb.Extrude(face, 1)`) creates a
-new named output. A **configuring** step (`op.chop(0, count=10)`,
-`op.set_patch('left', 'inlet')`, `op.translate([1, 0, 0])`) is *also just a step*: it
-takes an ancestor as input, and its output is that same element, now configured.
-**Transforms, chops, patches, graders, projections are not special cases — each is
-simply a kind of step.**
-
-### Adding steps
-
-The user appends a new step at the bottom of the list and picks its *type* from a
-palette. The one thing that needs categorizing is **that palette of step types**
-(face/sketch, operation/shape, transform, grader, chop, …) — and that categorization
-is **deferred**. The list itself stays uncategorized.
-
-### Two views of the one list
-
-- **The step list** — the script, as ordered statement-lines: each shows its type,
-  the ancestors it references, and its output name; expand a line to edit scalar
-  params; reorder/delete within dependency limits. Textual, transparent, the
-  power-user surface. Structured statements backed by step objects — **not** parsed
-  free text (so no parsing; pickle stays the document).
-- **The viewport** — the spatial projection of the *selected* step: place/drag
-  points, pick a face to grade or tag. This is where spatial crypticness dies.
-
-Selection is synced between them; each leads where it is strong (spatial work in the
-viewport, scalar params + structure in the step list). Both edit the one step list.
-**Audience is both** (decided): newcomers build spatially, power users read/edit the
-script; the two views serve them simultaneously because they are the same list.
-
-We still **lean on Polyscope's own structure list** for show/hide/color/inspect, so
-neither of our views re-implements visibility/appearance.
-
-**UI shell (decided).** We draw our **own** ImGui window
-(`set_open_imgui_window_for_user_callback(False)` + `psim.Begin("classy_polyscope")`,
-default size via `SetNextWindowSize(..., FirstUseEver)`) so the panel is **resizable**
-with a sensible default width. Inputs **fill the available width** (`SetNextItemWidth(-1)`
-with the panel drawing the label and the widget using a hidden `##` label), so they
-reflow on resize; point entries stack (combo + dropper on one line, xyz filling the line
-below) to never overflow a narrow window. Point clouds render with an enlarged
-`set_radius` (`POINT_RADIUS`, relative) — Polyscope's default sphere is tiny.
-
-### Rollback marker — build up to the editing step (decided)
-
-Borrowed wholesale from parametric CAD's feature-tree rollback bar. The viewport shows
-geometry built **only up to the currently-marked step**; everything after the marker is not
-built and not drawn. One mechanism that pays for many:
-
-- **Undo / reset / snapshot dissolve.** "Undo the optimization" = put the marker before the
-  optimize step; the un-optimized state rebuilds from the untouched upstream definition. No
-  snapshot stack, no reset button, no stale-tracking.
-- **Clutter and scope.** Downstream geometry can't be needed by upstream work (the reference
-  DAG only points backward), so hiding it loses nothing relevant and de-clutters the viewport
-  and picking.
-- **In-place mutation is harmless.** Each render re-executes the step prefix fresh, so a step
-  that mutates in place (an optimizer) only ever touches the freshly-built copy of *this*
-  render — the prefix rebuild *is* the working copy.
-- **"Show everything" is just the marker fully advanced** — the normal full-model view is the
-  special case, not a separate mode.
-
-The marker sits on **any** step uniformly — "a step is a step", no per-type behaviour.
-
-**Selecting a step *is* rolling the marker (unified, revised).** The earlier design kept two
-independent cursors — `session["active"]` (which step's panel is open) and the marker (how far
-the model builds) — moved by separate gestures (a casual list-click set only `active`; a per-row
-`(o)`/`( )` toggle or an **Edit** button moved the marker). That split three controls across the
-row (rollback toggle, type button, Edit) for one intent: *work on this step*. So they were
-**merged** — a step's row button now sets **both** `active` and `marker`, always editing
-in-context (downstream suspended, exactly like CAD), and the separate rollback toggle and Edit
-button are gone. Only two per-row controls remain (plus delete): the `::` reorder handle and the
-step button. This can't cause the thing "kept separate" guarded against (a stray rebuild from
-*inspecting*), because ambient viewport selection was already removed (see **Visual cues**) —
-nothing moves the active step except a deliberate list-click. Adding a step clears the marker to
-show-all so the new step is visible; "show everything" is otherwise just selecting the last step.
-
-This changes the rebuild cadence (**Resolved/proven**): `sync_display` builds the **prefix up
-to the marker**, not the whole list.
-
-### Interaction primitives (all on Polyscope picking + ImGui, no scene-graph code)
-
-- **Sketcher** (a sketch step) — *implemented*. Point placement is **pick-based reuse**: `ps.pick`
-  resolves the reference point under the cursor and that *is* the placed vertex; quad corners are
-  likewise selected by `ps.pick` world position (depth-correct, so off-plane on-curve points select
-  correctly — *not* work-plane proximity). ImGui tables edit points/quads. No Coin3D equivalent —
-  the proof the platform handles the hard, spatial part.
-  - **No work plane (decided; reversed).** A sketch **isn't required to be planar**, so it has
-    no plane of its own — the earlier per-sketch `work_origin`/`work_normal` and the
-    ray-∩-plane placement are **removed**. A click that lands on a reference point reuses it (see
-    below); a click that misses drops a free coordinate on the world **ground plane through the
-    origin** (oriented by `up_dir` — `screen_coords_to_world_ray` ∩ that plane). Polyscope's
-    ground can't be tilted (`up_dir` is axis-only) or read back (no height getter), so it's a
-    fixed horizontal default, not an adjustable surface. For a point off that plane, place a
-    reference `Point` (expression-parametric) and pick it, or translate later.
-  - **Reference-point reuse** *(implemented; live ref, revised from snapshot)* — in point mode a
-    click that lands on a reference point (`PointStep` — Single point / on-curve) stores a **live
-    reference** to it (pick-based, via `ps.pick` → step). So a sketch vertex *is* the named point —
-    the sketch follows it when the curve/param changes, and codegen names it
-    (`cb.MappedSketch([leading_edge, …], quads)` — the readable, parametric output the user wanted).
-    This works because `positions` is already a `point_list` (reference-or-literal per entry, exactly
-    like `Face` corners), so `build`/codegen needed no change; only the sketcher's *display* did —
-    every place it reads vertex coordinates now goes through `sketch.resolved_positions(context)` (a
-    ref → its built coordinate, an **expression string** `[bore/2, 0, 0]` → its evaluated value via
-    `context.params`, a literal through; an entry that can't resolve → None, skipped). A stored
-    entry is therefore a `PointStep`, an `[x, y, z]` literal, *or* an expression string, mixed freely
-    in one sketch (the points table edits literal/expression entries as free text).
-    - **Earlier this snapshotted** (froze the coordinate) so the sketch was a plain position list
-      that transformed rigidly, with an optimizer **CurveClamp** re-binding the vertex to the curve
-      — keeping "placeable/transformable" and "on the curve" separable. That's still reachable
-      per-entry: a **freeze** button in the points table converts a chosen reference to its current
-      coordinate for the transform-then-clamp workflow. The default flipped to live-ref because the
-      parametric build is the common need and reads far better in codegen; freeze is the opt-in for
-      the clamp path. (Caveat unchanged: transforming a sketch that holds a live ref then clamping
-      that vertex breaks the clamp's coordinate-match — freeze those vertices first.)
-- **Selection is tool-scoped, not ambient (decided; the old viewport→list mirror is removed).**
-  A bare viewport click in normal mode selects nothing; `session["active"]` is set **only from
-  the step list**. There is no `sync_selection`/`session["select"]`/`last_selection` machinery
-  anymore — highlighting is driven from the active step by `cues` (see **Visual cues**), and
-  assigning an element to an input is the dropper/dropdown (below). `sync_display` still calls
-  `ps.reset_selection()` before `remove_all_structures()` (belt-and-braces: keeps Polyscope's
-  own click-selection from lingering across a rebuild).
-- **Pick a step to fill an input (the dropper)** — *implemented for points and `ref`
-  fields*. Each input shows a `pick` button (eyedropper); clicking it toggles
-  `session["pick"] = (step, field, index)` and shows a "Pick mode" hint. **A bare click
-  always *selects*; only the dropper arms a fill** — no ambiguity. The next viewport
-  click resolves the picked structure to its step and binds it iff it is an *acceptable
-  ancestor* — `picked in model.candidates(step, accepts)` (point inputs accept `Point`; a
-  `ref` accepts its `accepts`), which enforces type *and* no-forward-reference. Pick mode
-  pauses the sketcher so the click isn't double-handled. `picker._resolve` turns a `PickResult`
-  into the bound element (a `FaceRef` for a `face`/`face_list` field, else the picked step) or
-  `None`; `handle_pick` → `_bind` stores it.
-  - **No steal-the-selection problem anymore.** With ambient selection removed, the dropper no
-    longer competes with a viewport→list mirror, so the old `last_selection` pre-seed is gone
-    (Polyscope's own click-selection is simply ignored, and reset on the next rebuild).
-- **Sweep-to-3D** *(Extrude, Revolve, Loft, Wedge done)* — an operation step referencing a
-  profile; pick a Face for `Extrude.base`/`Loft`/`Revolve`/`Wedge` via the dropper. Revolve
-  axis is a literal `point3`; origin is a reference-or-literal point. The Shape family
-  (Extruded/Revolved/Lofted) sweeps a **sketch** the same way.
-- **Grade / tag / project** *(Grade axis done as a step)* — the spatial form is: pick a
-  face → named side via `get_face` → chop / patch / projection. Same picking foundation.
-- **Drag-reorder** *(implemented)* — a per-row `::` grab handle replaces the up/down buttons;
-  holding it and dragging drives `model.move(step, ±1)` one swap per row-pitch crossed (the
-  classic ImGui swap-on-cross idiom: `IsItemActive` + `GetMouseDragDelta`). A move blocked by
-  the no-forward-reference guard simply doesn't reset the delta, so the drag *sticks* at the
-  dependency wall — the guard rendered as **felt resistance**, no extra code.
-- **Rollback marker** *(implemented; no longer a separate control)* — selecting a step (its row
-  button) rolls `session["marker"]` (a *step*, not an index) to that step, so the viewport builds
-  the prefix up to the step you're editing (`model.prefix` / `sync_display(upto=…)`), rows past it
-  greyed. There is no per-row `(o)`/`( )` toggle and no separate Edit button — one gesture
-  selects, edits, and rolls the marker (see **Rollback marker** above). Adding a step clears the
-  marker back to show-all.
-
----
-
-## Step types (the palette)
-
-There is no fixed "workflow" — the user adds steps in any order. What follows is the
-*palette* of step types (the categorization of this palette is itself deferred), each
-with what's cryptic about it and its spatial projection. The mesh shown is always the
-real output.
-
-| Step type | classy_blocks | Spatial projection (clarity win) |
-|---|---|---|
-| Point *(done)* / Curve *(done)* / Surface *(STL load+show done)* | points, curves, surfaces | place/pick points; **Points-file curve** *(implemented — `LinearInterpolatedCurve` from a file)*; **STL surface** *(implemented — load via trimesh, shown muted as a reference backdrop; reference-only, **projection** wires the path into codegen later)* |
-| `Face` *(done)* | 4 points + curved edges | pick/place corners; curve an edge with an **Edge step** (below) |
-| Edge steps *(done)* | `add_edge(…, cb.Arc/Origin/Angle/Project/OnCurve)` | **click an edge** on any solid (block edges) or hand-laid face → set its curvature/projection; per-frame pickable overlay with kind/chop glyphs. One `_KINDS` table drives both owners. See **Edges** |
-| `ExtractFace` *(done)* | `op.get_face(side)` | **click a face** on any operation/shape → a reusable profile (a `FaceStep`, so Extrude/Loft accept it). Uses the patch face-picker (a single `face` input), not the ancestor's `get_closest_face(point)` — exact, click-the-face |
-| `Connector` *(done)* | `cb.Loft(faceA, faceB)` | **click two faces** → the bridging block, in one step (fast intermediate geometry). Two `face` inputs |
-| `MappedSketch` *(done)* | positions + quads | the sketcher *(implemented)* — kept **separate** from Face (decided); now a `SketchStep` so it feeds Shapes |
-| Sketch catalogue *(done)* | Disk/Oval/… sketches | declared from points; `"sketch_faces"` render |
-| `Box`/`Extrude`/`Loft`/`Revolve`/`Wedge` *(done)* | sweep a profile | reference a profile step; live preview; pick points for revolve axis / 2nd loft profile |
-| Shapes & catalogue solids *(done)* | sweep a sketch / ready-made solids | Extruded/Revolved/Lofted shape (sketch ref); Cylinder/Frustum/Elbow/rings/spheres (points). Grade with an **auto-grader** (no per-shape chopping — see below). |
-| `Chop` (grade) | `chop(axis, …)` | *implemented* (Grade axis step, **operations only**); spatial form (pick face → axis) later |
-| Auto-graders *(done)* | `FixedCount`/`Simple`/`Inflation` grader | a `HelperStep`: `cb.Grader(mesh, …).grade()`; grades every ungraded row → the one thing a Shape needs to write |
-| `SetPatch` (tag) *(done)* | `op.set_patch(side, name)` per picked face | **click faces → name**: a patch is a name + a set of picked faces; the system derives each operation + side (see **Patches** below). Works on operations *and* shapes uniformly. `set_default_patch` not required to write |
-| `Project` | `project_*(geometry)` | *deferred* — pick edge/face → pick target surface/curve |
-| `Transform` *(translate/rotate/scale/copy done)* | `op.translate/rotate/scale(…)`, `op.copy()` | plain `ConfiguringStep`s on cb's uniform element protocol — any step whose built value is a cb `ElementBase` (operations/shapes/copies/sketches/faces *and reference curves*; `is_transformable` keys on the geometry-producing `render_kind`s, so a Point — a bare `[x,y,z]` literal, not an element — is excluded). **Numeric** (the "gizmo vs numeric" UI question sidestepped — numeric first); `origin` is a pickable `point` pivot (default world origin, not cb's centroid). `Copy` is a `DerivedStep` (new element, `render_kind="element"` → unified renderer); copies are first-class targets (transform/patch/connect a copy). Patterned multi-copy (**arrays**) is left to **Stacks**, not a standalone step |
-| Smooth / Optimize | Sketch/Shape/Mesh smoothers & optimizers | smoothers are `HelperStep`s; optimizers decompose into producing + per-kind **clamp steps** + optimize, on cb's existing clamp API (see **Optimization & smoothing**) |
-| Write | assemble/grade/write | *implemented* — Write blockMeshDict button (no default patch needed) |
-
-**Grading model (decided).** classy_blocks shapes *can* be chopped per-axis, but that means
-per-shape recipes (and `chop_axial/radial/tangential` quirks — spheres have no generic
-`chop` at all). We **don't grade shapes manually**. Instead: the operation `Chop` (single
-block, done) handles the specific axes a user cares about, and an **auto-grader** fills in
-everything else. A grader grades only rows still ungraded (`row.count == 0`), so a manual
-`Chop` and a grader compose. This is what unblocks every Shape / catalogue solid from
-writing a blockMeshDict — *without* any shape-specific chop code.
-
-**Patches (decided, done).** classy_blocks' per-shape patch shortcuts (`set_outer_patch`,
-`set_symmetry_patch`, …) differ shape to shape — `if`-ing to each is exactly what we avoid.
-Instead a patch is **a name plus a set of clicked faces**, and the system derives the
-operation + side of each. This is uniform across bare operations *and* shapes/stacks: the
-viewport renders an operation as six side quads and a shape as `len(operations) × 6`, so a
-picked face index alone gives both the operation (`operations_of(value)[index // 6]`, where
-`operations_of = getattr(value, "operations", [value])` — a shape exposes `.operations`, a
-bare op *is* its operation) and the side (`SIDES[index % 6]`). A `FaceRef(step, index)`
-stores only that (a step reference + an int, so it pickles), resolving lazily at build
-(`op.set_patch(side, name)`) and codegen. The picker gains an *accumulating* `face_list`
-mode (each click appends, stays armed). No per-shape code, no second dropdown — the same
-flat-index idea generalizes to the planned spatial Chop (pick face → axis).
-
-**Scope now.** The build→grade→write loop is closed (point/profile → sweep → grade →
-**patch** → blockMeshDict), so a runnable case comes out. Projection, transforms, and the
-spatial grading UI are deferred — all ride the proven `pick` foundation, so deferral costs
-no rework.
-
----
-
-## Optimization & smoothing
-
-Both split sharply by cost. **Optimizers are implemented** (the producing + clamp + optimize
-steps below — `SketchOptimizer` only so far; Shape/Mesh deferred), built on cb's existing
-clamp API after smart points were rejected (see **Clamps are explicit steps**). **Smoothers
-are still planned** — they're plain `HelperStep`s (`helper = cb.Cls(target); helper.<call>()`).
-
-### Smoothers — cheap, inline (build next)
-
-`MeshSmoother` / `SketchSmoother` are instant and clamp-free, so they're plain
-`HelperStep`s with `cb_call="smooth"` that run on **every build** like any other step:
-
-- `MeshSmoother` is **mesh-targeted** — runs in `apply_to_mesh`, exactly like a grader.
-- `SketchSmoother` is the **first element-targeted** `HelperStep` — its target is a sketch
-  `ref`, and it mutates that sketch *in place during the build pass*, before any dependent
-  sweep builds. Each rebuild constructs a fresh sketch and smooths it once, so there is no
-  compounding.
-
-These are the warm-up that proves the element-target branch; no button, no special-casing.
-
-### Optimizers — expensive, decoupled from the live rebuild *(implemented)*
-
-An optimizer can take a while, and it **mutates its target mid-pipeline** (a sketch/shape
-the downstream sweep depends on). Running it inside the every-dirty-edit rebuild would
-freeze the UI, so it is kept off that path and runs in exactly two places:
-
-- a **Run button** on the optimizer step — on demand, for preview;
-- at **write / export** — the real output must be optimized; slowness is acceptable there.
-
-So `build()` gains an `optimize` flag: `build(optimize=False)` for the live viewport
-(optimizers construct but **skip** `optimize()`), `build(optimize=True)` for
-`build_mesh`/write. Element optimizers run inline in build order (before their dependents,
-since mutation is in place); a mesh optimizer runs in `apply_to_mesh` like a grader.
-**Codegen always emits `optimize()`** — never baked coordinates; the exported script
-recomputes faithfully, and only the GUI preview skips it.
-
-**In-place mutation is contained by the rebuild; undo is the marker.** Every rebuild
-reconstructs the prefix from source (the optimize step mutates a freshly-built target, never
-a persisted one), so re-running never compounds and pressing Run twice is idempotent. And
-"undo the optimization" needs no snapshot: it is just moving the **rollback marker** (see
-**Authoring model → Rollback marker**) before the optimize step — the upstream definition was
-never touched, so the un-optimized state simply rebuilds.
-
-**Postponed for v1 (decided):** result **caching** (after Run, the optimized preview shows
-until the next dirty edit, then reverts — the real geometry still comes out at write) and a
-shared **output/console window** for the optimizer report. Both deferred — though per-step
-**build errors** are already surfaced inline in the panel (see **Build errors** in the Data
-model section); a console would extend that to write/optimizer output.
-
-### Clamps are explicit steps — no smart points (decided, reversed)
-
-A clamp pins a mesh vertex and says how it may move (free / on-line / on-plane / on-circle /
-on-curve / fixed). classy_blocks' optimizer grid is deliberately **coordinate-addressed**: a
-`CurveClamp(position, curve, param)` is matched back to its vertex *by coordinate within
-`TOL`* (`grid.py`), junctions are bare indices with no link to a construct point. **That
-coordinate-addressing is the whole mechanism we lean on** — a clicked point's position *is*
-its identity; nothing more is needed to name the vertex a clamp acts on.
-
-**Smart points were explored and rejected.** The earlier plan had classy_blocks grow *smart
-points* (a point carrying its own constraint) + an `AutoOptimizer` that reads them. Pursuing
-it meant pulling surfaces / `trimesh` into the geometry primitives and overhauling cb's point
-types to solve what is a **GUI** problem — solving one problem by creating three. (Note: the
-objection was to trimesh *inside cb's primitives*; trimesh as a foundry-side dependency for
-loading reference STLs to display is a separate, accepted call.) The
-blinking-red-light test failed, so **classy_blocks is left untouched** and the feature is
-built entirely on the foundry side, against cb's existing coordinate-addressed clamp API.
-
-**Constraints are steps; points stay plain.** A point placed on a curve uses the curve only
-as construction geometry for placement; it does not carry a live constraint. *Movement during
-optimization is decided entirely by clamp steps*, and the default is that every vertex is
-**fixed** (no clamp). "Releasing" a vertex = adding a clamp step. So three step kinds, all in
-the existing taxonomy — no new machinery (**all implemented** in `steps/optimize.py`):
-
-- **Optimizer step** (`OptimizerStep` / `SketchOptimizer`) — produces `cb.SketchOptimizer(target)`
-  (a target `ref`); `render_kind=None` (the target it optimizes already shows). Its output is
-  the optimizer object later steps reference. `Shape`/`Mesh` variants deferred.
-- **Clamp steps** (`ClampStep` + one subclass per kind: Free/Line/Plane/Radial/Curve) — each a
-  `ConfiguringStep` on the optimizer: `optimizer.add_clamp(cb.CurveClamp(position, curve, …))`.
-  One step type per clamp class, so dispatch is the step framework's job — no `if`-ladder. A
-  clamp step references `(optimizer, point, geometry)`; the **point is a `point` input named by
-  the existing dropper** (`handle_pick` fills it from a clicked structure, accept-checked via
-  `candidates`) — the "pick-snap" we'd sketched already exists, so clamp authoring adds *no*
-  picking code. Codegen resolves the point ref to its position, which cb matches to the vertex
-  by coordinate.
-- **Optimize step** (`Optimize`) — `optimizer.optimize(max_iterations=…)`; the expensive call
-  (see below), gated by the `build(optimize=…)` flag and a **Run** button (`_optimize_editor`
-  → `session["run_optimize"]` → one-shot `build(optimize=True)`). `max_iterations` is a plain
-  schema field — fast-but-rough during authoring, raised before export.
-
-Default-fixed means coincident/degenerate points need no guarding: cb's optimizer already
-refuses degenerate cells and the user sees the problem in the viewport — validation lives in
-perception + the downstream, not in defensive code.
-
-(The on-surface clamp case still waits on cb surface support — `ParametricSurfaceClamp` is
-function-based — so clamping *to* a loaded STL is deferred even though STL load+display now
-exists. On-line/on-plane/on-curve need nothing new.)
-
----
-
-## Package layout (GUI / logic split, decided)
-
-One-way import rule — `view → model → steps`, never the reverse — enforces the
-separation mechanically:
-
-- `classy_foundry/steps/` — step types + their `SCHEMA`s, `build()`, `to_lines()`,
-  plus `catalog.py` (the palette). Imports only `classy_blocks`; no `polyscope`.
-- `classy_foundry/model.py` — the ordered step list, reference resolution, codegen,
-  pickle save/load. No `polyscope`.
-- `classy_foundry/view/` — polyscope rendering, the step-list panel + viewport
-  interaction (schema→widget registry, picking). Imports `model`, never the reverse.
-- `classy_foundry/__main__.py` — the `ps.show()` + `userCallback` entry point.
-
-## Roadmap
-
-**Done.**
-
-- **Milestone 0 — vertical slice.** `Box` (Element + SCHEMA) → `Mesh` → display from
-  per-element geometry → pickle save/load → export script. Proved schema-driven
-  elements, pickle-as-document, codegen (a generated script wrote a real
-  `blockMeshDict`), and the GUI frame path (headless via `frame_tick`).
-- **MappedSketch sketcher.** Element + display + click-to-place/snap + points/quads
-  tables + delete/reindex + selection overlay. Confirmed responsive in live use —
-  the platform-decision evidence.
-
-- **Step model** — `steps` list; `ProducingStep`/`ValueStep`/`ConfiguringStep` bases;
-  `ref` + `point`/`point_list` kinds; `model.rename()` (identifier + uniqueness);
-  identity references; pickle + codegen over steps; forward-ref guard.
-- **Step-list UI** — editable name per line, reorder/delete, **data-driven add-step
-  palette** (nested popup grouped by `category`), selection-driven editor.
-- **Step types** — `Point`, `Face`, `Box`, `Extrude`, `MappedSketch`, `Chop` (and all the
-  operations/sketches/shapes/curve listed below).
-- **Closed the loop** — Write blockMeshDict (verified output); script export runs standalone.
-- **Literal-or-ref point inputs** — Face corners / Box points are a literal *or* a `Point`.
-- **Viewport selection + dropper picking** — bare click selects a step (viewport→list);
-  the `pick` dropper fills a point entry or a `ref` field (`Extrude.base`) from a clicked
-  structure, accept-checked via `candidates`; stale-selection crash fixed; **pick no longer
-  steals the edited selection** (the `last_selection` pre-seed + transient-empty handling).
-- **UI shell** — own resizable window; width-filling inputs; enlarged point spheres.
-- **Palette order** — follows `CATALOG` insertion order, not alphabetical (the `sorted()`
-  in the menu was removed; `CATALOG` is grouped + ordered to match this doc's palette).
-- **World-axes triad** — origin gizmo (x/y/z = red/green/blue ambient vectors), sized to the
-  current scene extent (`get_length_scale`) so it stays legible on any model.
-- **Scene environment** — left to Polyscope's default auto-fit (no `pin_scene`/`fit_view`/
-  `model_bounds`, no app Fit button). An earlier "own the extents" design (fixed pinned world +
-  once-at-startup fit) was **reversed** because pinned extents made out-of-scale geometry (a real
-  airfoil `.pts` curve in a unit-scale scene) an unreachable speck; letting Polyscope auto-fit
-  tracks the built geometry's actual scale. `geometry_of` (`render_kind → geometry`) remains,
-  shared by renderers + cues.
-- **More operations** — `Revolve`, `Loft`, `Wedge` (pure `ProducingStep` declarations,
-  all `"operation"` render).
-- **Expression inputs** — `float`/`int` fields are math-expression strings (`pi/2`,
-  `deg2rad(90)`), eval'd at build, emitted verbatim; `eval_expr` + `expr_import_line`.
-- **Sketch catalogue (Flat)** — `Circle`/`Circle (1 core)`/`Half circle`/`Boxed circle`/
-  `Oval` on `SketchStep`/`DiskSketch`; `"sketch_faces"` renderer; `MappedSketch` rebased
-  onto `SketchStep` so it feeds Shapes.
-- **Shapes (Solids → Shapes)** — `ExtrudedShape`/`RevolvedShape`/`LoftedShape`, sweeping
-  any `SketchStep`; `"shape"` renderer over `shape.operations`.
-- **Catalogue solids (Solids → Catalogue)** — `Cylinder`, `Frustum`, `Elbow`,
-  `ExtrudedRing`, `RevolvedRing` (Face cross-section), `EighthSphere`/`QuarterSphere`/
-  `HalfSphere` (`Hemisphere`). Optional trailing cb args omitted → defaults.
-- **Points-file reference curve (References)** — `PointsFileCurve`
-  (`cb.LinearInterpolatedCurve`) via the new `points_file` kind; `"curve"` renderer.
-- **Auto-graders (Grading → Automatic)** — `FixedCount`/`Simple`/`Inflation` on the new
-  `HelperStep` base (`cb.Grader(mesh, …).grade()`, via the `apply_to_mesh` hook); a `choice`
-  field kind (combo) for `Simple.take`. **This is what lets Shapes / catalogue solids write
-  a blockMeshDict** — grading is a grader + optional manual operation `Chop`, with *no*
-  per-shape chop code. (Supersedes the earlier "shape grading" plan.)
-- **Edges (Solids/Flat → Add edge)** — `EdgeStep` family for operation block-edges and flat-face
-  edges, five kinds (Arc/Origin/Angle/Project/OnCurve) generated from one `_KINDS` table over two
-  targets; `EdgeRef`/`FaceEdgeRef` (flat-index refs sharing the `FaceRef` machinery), the `edge`/
-  `face_edge` picker kinds, a per-frame pickable overlay with kind/chop glyphs (`view/edges.py`),
-  and the `EdgeRef` cue highlight. `OnCurve` follows a `CurveStep`.
-
-**Next:**
-
-1. **Stacks** *(done — Extruded/Revolved)* — `ExtrudedStack`/`RevolvedStack` on a shared
-   `StackStep` base (`steps/stacks.py`), pure `ProducingStep` declarations that `adds_to_mesh`
-   and render/patch-pick through the existing `"shape"` path (a `Stack` exposes `.operations`,
-   all `operations_of` needs). `LoftedStack` is absent — classy_blocks has no such class, only
-   the `TransformedStack` base — so it isn't offered (like the un-exported catalogue solids).
-2. **Extract face** *(done)* — `ExtractFace`: click a face → `op.get_face(side)` as a reusable
-   profile, on a shared `FaceStep` base (Extrude/Loft `accept` it). Reuses the patch
-   face-picker via a single `face` input — see **Patches** / `steps/faces.py`.
-   **Connector** *(done)* — `cb.Loft(faceA, faceB)`: click two faces → the bridging block in
-   one step (fast intermediate geometry).
-3. **Smoothers** — `MeshSmoother` (mesh-targeted, like a grader) + `SketchSmoother` (first
-   element-targeted `HelperStep`). Cheap, run inline, no clamps. See **Optimization &
-   smoothing**.
-4. **Rollback marker + drag-reorder** *(implemented; live drag-feel pending eyes)* —
-   `sync_display`/`model.build`/`model.prefix` build the **prefix up to the marker** (a step
-   ref, `None`=all); a `::` drag-reorder handle replaces the up/down buttons. The rollback toggle
-   and separate Edit button were **removed** — selecting a step's row button now rolls the marker
-   to it (active *and* marker in one gesture; adding a step clears to show-all). See
-   **Authoring model → Rollback marker**.
-5. **Optimizers** *(implemented — `SketchOptimizer` only; Shape/Mesh deferred)* — built on
-   cb's existing coordinate-addressed clamp API (smart points rejected). `OptimizerStep` +
-   per-kind **clamp steps** (Free/Line/Plane/Radial/Curve; point named via the existing
-   dropper) + an `Optimize` step (Run button, `max_iterations` field, `build(optimize=…)`).
-   See **Optimization & smoothing → Clamps are explicit steps**.
-6. **Patches** *(done)* — `SetPatch`: click faces → name, uniform over operations and shapes
-   via the flat face-index → (operation, side) mapping; accumulating `face_list` pick +
-   `FaceRef`. See **Patches (decided, done)**.
-7. **STL surface reference** *(done)* — `Surface`: load via trimesh, show muted as a backdrop;
-   reference-only (projection wires the path into codegen later). See the step table.
-8. **Transforms** *(translate/rotate/scale/copy done)* — `Translate`/`Rotate`/`Scale`
-   (`ConfiguringStep`s) + `Copy` (`DerivedStep` → new element, unified `"element"` renderer),
-   on cb's uniform element protocol; numeric, pickable-point pivot. Patterned multi-copy
-   (linear/polar **arrays**) is **left to Stacks** (cb's own multi-element family — see below),
-   not a standalone array step. See the `Transform` table row.
-9. **Edges** *(done)* — `EdgeStep` family (Arc/Origin/Angle/Project/OnCurve) for both operation
-   block-edges (`EdgeRef`) and flat-face edges (`FaceEdgeRef`), one `_KINDS` table over two
-   targets; pickable per-frame overlay + kind/chop glyphs (`view/edges.py`). `OnCurve` follows a
-   `CurveStep`, so the Points-file curve is its foundation. See **Edges**. **Projections** (a
-   standalone Project step onto STL/curve targets) remain deferred — the edge `Project` *kind* is
-   done, but face/point projection steps are not.
-10. **List → viewport highlight** — *done as part of **Visual cues***. Selecting a step in the
-    list highlights its output (calm-blue outline) and every input it references (green) in the
-    viewport; `view/cues.py` sources all highlights from the active step. (Polyscope has no
-    `set_selection`, so this is our own overlay, not its selection.)
-
-**Deferred (decided):** palette categorization polish, the transform **gizmo** (numeric
-translate/rotate/scale/copy done; patterned multi-copy is left to **Stacks**, not a standalone
-array step), projection onto STL surfaces (load+show done), a file-dialog
-picker for `points_file` (path is plain text for now). (Non-planar sketches are no longer
-deferred — the picker-of-everything drops the work-plane assumption entirely; see **Sketcher**.) A standalone `Vector` reference was
-tried and **reverted** (an arrow-rendered point) — a proper `Axis` belongs in classy_blocks
-core; reference-point + literal axis covers the vast majority. `QuarterDisk`/`Annulus`/full
-`Sphere` are absent only because classy_blocks doesn't export them at top level (one-line cb
-export to add).
-
-**Axis cue (implemented).** A cosmetic overlay, *not* a new reference type: a step declares
-`AXIS = (origin_field, direction_field)` (a base `Step` class attr, default `None`) and its
-active-step cue then draws that axis as a **point-and-vector arrow** — the origin (resolved via
-the build's `resolve_value`, so a literal or a `Point` ref both work) plus the `point3` direction,
-rendered with the **same** scene-scaled ambient vector-quantity the world triad uses
-(`display.axis_vectors`, shared). It rides the existing cue machinery (an `("axis", step)` element,
-a `RENDER["axis"]` entry, magenta), so it clears/scales like any other highlight. Declared on
-`Revolve` and `Rotate`; any origin+direction step opts in with one line.
-
-**Step palette contents** (✓ = implemented)
-
-- Sources
-  - ✓ Float (a named number → an expression-namespace variable other fields' expressions read)
-  - ✓ Single point (fixed)
-  - ✓ STL surface
-  - Revolved STL surface
-  - ✓ Points file (a list of 3d points → `LinearInterpolatedCurve`)
-- References
-  - ✓ Point on curve (a curve + parameter → `curve.get_point(param)`; referenceable like any point)
-  - Cusp point
-  - Curve from cross-section
-  - Midpoint (between a multitude of selected points)
-  - Formula (point based on user-provided equation) (needs a better name)
-- Flat
-  - ✓ Face (specify points manually)
-  - ✓ Extract face (click a face on an operation/shape)
-  - ✓ Mapped sketch (with an editor)
-  - Add edge *(on a hand-laid `Face`/`MappedSketch` — the `FaceEdgeRef` family)*:
-    - ✓ Arc
-    - ✓ Origin
-    - ✓ Angle
-    - ✓ Project
-    - ✓ On curve
-  - Sketches catalogue:
-    - Quarter circle *(absent — `QuarterDisk` not cb-exported)*
-    - ✓ Half circle
-    - ✓ Circle
-    - ✓ Circle (1 core)
-    - ✓ Oval
-    - ✓ Boxed circle
-    - Splined rounds (added later)
-    - Ring *(absent — `Annulus` not cb-exported)*
-- Solids
-  - Simple
-    - ✓ Box
-    - ✓ Extrude
-    - ✓ Rotate *(= `Revolve` operation)*
-    - ✓ Loft
-    - ✓ Connector *(loft between two clicked faces)*
-    - ✓ Wedge
-  - Shapes
-    - ✓ Extruded shape
-    - ✓ Revolved shape
-    - ✓ Lofted shape
-  - Stacks
-    - ✓ Extruded stack
-    - ✓ Revolved stack
-    - Lofted stack *(absent — no `LoftedStack` in classy_blocks, only the `TransformedStack` base)*
-  - Solids catalogue *(`("Solids", "Catalogue")`)*:
-    - ✓ Cylinder
-    - ✓ Conical frustum
-    - ✓ Elbow
-    - ✓ Extruded ring
-    - ✓ Revolved ring
-    - ✓ Eighth sphere
-    - ✓ Quarter sphere
-    - ✓ Half sphere *(`Hemisphere`)*
-    - Sphere *(absent — full `Sphere` not cb-exported)*
-  - Add edge *(on a block edge of any operation/shape/copy — the `EdgeRef` family)*:
-    - ✓ Arc
-    - ✓ Origin
-    - ✓ Angle
-    - ✓ Project
-    - ✓ On curve
-- Modifiers
-  - ✓ Copy *(`element.copy()` → new solid; one renderer covers op/shape copies)*
-  - ✓ Translate
-  - ✓ Rotate *(cb `rotate`; pivot `origin` is a pickable point)*
-  - ✓ Scale
-  - Modify edge *(done — implemented as the **Add edge** step families under `Solids` and `Flat`
-    above, not a `Modifiers` submenu: Arc / Origin / Angle / Project / On curve)*
-  - Project:
-    - Point
-    - Edge *(done — the `Project` edge kind under **Add edge**)*
-    - Face
-- Optimizers
-  - Sketch smoother
-  - Shape smoother
-  - Sketch optimizer
-  - Shape optimizer
-  - Mesh optimizer
-- Grading
-  - ✓ Grade axis *(operations only — shapes grade via an auto-grader, by design)*
-  - Grade Edge
-  - Automatic:
-    - ✓ Fixed count
-    - ✓ Simple
-    - ✓ Inflation
-- Patches
-  - ✓ Set patch (click faces → name; operations and shapes)
-  - Default
-
----
-
-## Resolved / proven
-
-- **Picklability** — confirmed: recipe objects pickle/unpickle cleanly (scalars +
-  references only, no live `cb` geometry); round-trip preserves values and config.
-- **Re-render cadence** — rebuild on every dirty edit (`remove_all_structures` +
-  re-register). Cheap and responsive in live use; no recompute button needed.
-- **GUI testability** — the whole logic *and* GUI frame path run headless via
-  `frame_tick`; the only thing needing live eyes is mouse-click feel (validated).
-
-## Open questions (mostly deferred features)
-
-- **Picking precision for chops** — Polyscope face picking gives a face index; when
-  the grading/patch editor lands, confirm the index ↔ named-side mapping is stable
-  across operation types (Box vs Loft vs Revolve cell ordering).
-- **File dialogs / undo** — Save/Open currently use a hardcoded path; a real
-  app needs a file-dialog shim and (cheap, via pickle snapshots) undo. Bounded work,
-  the main "Polyscope gives no plumbing" papercut.
-- **GUI framework — view-only escape hatch** *(deferred, not a lock-in)*. Polyscope
-  can be reduced to "just the 3D view" under a different GUI framework (Qt, web) two
-  ways, both supported: (1) `set_build_gui(False)` + `frame_tick()` driven from an
-  external main loop; (2) headless EGL (`init('openGL3_egl')`) + render-image
-  quantities / `screenshot_to_buffer`, blitted into another framework's widget. Not
-  pursued: the integration is the costly part (two loops or manual mouse-coord
-  re-routing — it reimplements the picking Polyscope gives for free) and it
-  reintroduces the framework weight whose absence made Polyscope the choice for a
-  solo dev. The designed step-list UI is well within ImGui; the real ImGui gaps
-  (**file dialogs**, **undo**) are bounded and fixed in place (a dialog shim; a
-  pickle-snapshot stack). Because the `view → model` split keeps `model`/`steps` free
-  of `polyscope`, that layer can move under another GUI later — so this is
-  revisitable, not now-or-never. Revisit only if the project pivots to a polished app
-  for non-technical users, dialog-heavy workflows, or embedding in an existing tool.
+`Point`, `Cell` and `Patch` are `@dataclass(eq=False)`, so `==` is identity and they stay
+hashable. Identity *is* the data model. Deleting a point cascades to the cells and patch
+faces that reference it, the way deleting a vertex takes its faces with it in Blender.
+
+Two consequences worth knowing:
+
+- **A face is never a construction entity** — only a 4-point tuple identifying a patch
+  face. Blocks are built from points directly, in the order they were clicked, which is
+  blockMesh vertex ordering and therefore the contract with `MappedShape`.
+- **A patch with a surface and no faces is a backdrop** — that is how an STL loaded to
+  build against is represented, so no separate surfaces collection exists anywhere.
+  Conversely, a patch with faces and no surface is a plain boundary (an inlet).
+
+## The file
+
+JSON, `.shape` extension, written and read by `MappedShapeDescription.save`/`.load`:
+
+```json
+{
+ "points":   [[0.0, 0.0, 0.0], ...],
+ "hexas":    [[0, 1, 2, 3, 4, 5, 6, 7], ...],
+ "patches":  {"top": [[8, 9, 10, 11]]},
+ "surfaces": {"top": "blade.stl"}
+}
+```
+
+One point, block and face per line, so a diff shows a moved point or a new block as a
+single changed row (`_one_per_line` collapses `json.dumps`' exploded numeric arrays; the
+result is still ordinary JSON). Surface paths are stored **relative to the `.shape` file**,
+so a project directory stays movable. `patches` and `surfaces` share their keys.
+
+`description.py` is **destined for classy_blocks** — a `.shape` file is a classy_blocks
+document and nobody should have to install foundry (and a GPU stack) to read one. It
+therefore imports nothing from foundry, and moving it is a file move. `MappedShape` taking
+a description rather than `(points, hexas)` is the matching change on that side.
+
+## The editor
+
+Blender's modal grammar, because it is the muscle memory of the people who would use this.
+One departure: **delete is `Delete`, not `X`**, since `X` already constrains a move to the
+X axis.
+
+| Key | Operation |
+|-----|-----------|
+| `P` | place a point — on the surface under the cursor, else the ground plane |
+| click / Shift+click | select a point / add to the selection |
+| `G` | move the selection |
+| `X`/`Y`/`Z` | during a move: constrain to that axis |
+| `Shift+X/Y/Z` | during a move: constrain to the plane *excluding* that axis (`Shift+Z` = XY) |
+| Ctrl (held) | during a move: snap to the surface under the cursor |
+| `Esc` / click | during a move: cancel / confirm |
+| `B` | make a block from 8 selected points (or 4, for a sketch quad) |
+| `Delete` | delete the selection, and the blocks and patch faces using it |
+| `Ctrl+S` | save |
+
+**Selection is an ordered list, not a set.** Click order is preserved and operations
+consume it in that order — that is what gives the user control over vertex ordering
+without the editor guessing at windings. Inverted or twisted blocks are the user's to see
+and fix; a signed-volume check is a later addition.
+
+**`keymap.py` is the single source for dispatch *and* the help window**, so the Tools
+window cannot drift from what the keys actually do. Adding an operation is one row.
+
+**Constraints are one protocol, two classes** (`geom.py`):
+
+| | `from_ray(origin, direction)` | `project(point)` | `offset(distance)` | `allows(direction)` |
+|---|---|---|---|---|
+| `Plane` | ray ∩ plane | drop the off-plane component | zero — a number means nothing in a plane | the axes lying in the plane |
+| `Axis` | closest point on the axis to the ray | foot of the perpendicular | along the direction | its own axis, either way |
+
+Free move is not a special case: it is a `Plane` whose normal is the camera direction.
+**Snapping needs no geometry query** — `ps.pick` already returns the world position of the
+triangle under the cursor, so the move is `constraint.project(surface_hit)` when snapping
+and `constraint.from_ray(...)` otherwise. Snapping while constrained therefore stays
+constrained.
+
+**Two visual cues, and no more.** Selected points take a highlight colour (a per-point
+colour quantity on the cloud). While a move is live -- and only then -- an axis gizmo is
+drawn through the move's centroid: three world axes, each bright when the constraint
+*allows* travel along it and dim otherwise. That question is asked of the constraint
+(`allows(direction)`), so a `Shift+Z` plane lights X and Y, an `X` constraint lights X
+alone, and an obliquely-viewed free move lights none -- which is what "unconstrained by
+any world axis" looks like.
+
+**Appearance is Polyscope's own business.** Transparency, edges and colours are in its
+structure controls already, so foundry writes none of it.
+
+## Modules
+
+| Module | Responsibility |
+|---|---|
+| `document.py` | `Point`, `Cell`, `Patch`, `Document`; the add/delete cascade. No polyscope, no classy_blocks. |
+| `description.py` | `MappedShapeDescription` + `FileSurface`, `save`/`load`. Destined for classy_blocks; imports nothing from foundry. |
+| `storage.py` | `Document` ↔ description. **The only place indices exist.** |
+| `transform.py` | `Move` — the modal move; knows nothing of mice, rays or polyscope. |
+| `geom.py` | `ray_plane_hit`, `load_trimesh`, `Plane`, `Axis`. Pure. |
+| `view/scene.py` | Renders a document: point cloud (selection coloured), one mesh of every cell's sides, a mesh per backdrop, and the move gizmo. |
+| `view/keymap.py` | `Binding` + the table; dispatch and the help window. |
+| `view/editor.py` | Ordered selection, operations, and `handle_frame` — the one place mouse/keyboard/camera enter. |
+| `view/patches.py` | The patch panel: names, face counts, surface files. |
+| `spacemouse.py` | spacenavd's socket protocol; `poll()` → the puck's current deflection. No polyscope. |
+| `navigation.py` | Turntable camera math: a deflection applied to a `View`. Pure. |
+| `view/navigator.py` | Wires the two to polyscope's camera. |
+| `__main__.py` | The CLI. |
+
+`view/` imports downward only; nothing outside `view/` imports polyscope.
+
+## Testing
+
+```bash
+/home/nejc/venv/classy_foundry/bin/python -m pytest tests     # from the repo root
+/home/nejc/venv/classy_foundry/bin/python -m ruff check .
+```
+
+`document`, `storage`, `description`, `geom` and `transform` are pure and tested directly.
+The view layer is exercised headlessly with Polyscope's CPU mock:
+`ps.set_allow_headless_backends(True)` + `ps.init('openGL_mock')` + `ps.frame_tick()`,
+calling the inner draw functions directly (the user callback fires roughly once per process
+in mock mode). Note `psim.GetIO()` segfaults outside an initialised imgui frame, so
+anything touching it must run after a `frame_tick`.
+
+## Not here (yet)
+
+- **The extrude shortcut** — select four points, `E` duplicates them, appends
+  `Cell(originals + copies)` and drops into the move modal on the copies. Three things
+  already make it additive rather than a rewrite: selection is an *ordered list of points*,
+  cell creation is a function of an ordered point list, and `begin_move` takes **any**
+  point list plus a starting constraint rather than reading the selection itself.
+- **Inverted-block detection** — a signed-volume check that flags, not repairs.
+- **Morphing and optimisation data** — where per-point constraints would live, matching the
+  `TODO` on the classy_blocks side. Surfaces currently bind per *patch*, not per point.
+- **Rotate and scale** — deliberately absent: these are topology blueprints, not geometry.

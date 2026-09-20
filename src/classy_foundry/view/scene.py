@@ -1,85 +1,118 @@
-"""Save/restore the Polyscope scene state alongside the model pickle.
+"""Renders a `Document` into Polyscope structures.
 
-Polyscope persists none of this itself (its `.polyscope.ini` is only window geometry + UI
-scale), but it exposes readers for the parts that matter, so we fold the **savable,
-non-appearance** state into the model's opaque `scene` blob (see `model.save`):
+Three kinds of structure, no more: a point cloud of every point, one surface mesh carrying
+every cell's sides, and one mesh per backdrop surface. Appearance (transparency, edges,
+colours) is Polyscope's own business -- its structure controls already do all of it, so
+none of it is written here.
 
-- the whole **camera** in one string via `get_view_as_json` — viewpoint, up/front dir, fov,
-  projection, navigation style, view centre;
-- each **slice plane**'s pose + visibility flags (the cross-section cuts).
-
-Deliberately excluded: the **ground plane** (all its setters are write-only — nothing to
-read back) and **appearance** (background, per-structure colours/radii — by request; the
-latter also fights the per-rebuild structure re-registration).
-
-Slice planes have no enumeration API, so we probe their auto-names (`Scene Slice Plane N`)
-and stop after a few consecutive misses (tolerating a small gap from a removed plane).
+A cell's sides are emitted as *independent* blocks of 8 (or 4) vertices rather than as a
+shared vertex pool, so each block is visually and pickably its own thing.
 """
 
+import os
+
+import numpy as np
 import polyscope as ps
 
-_SLICE_NAME = "Scene Slice Plane "  # Polyscope's auto-name for `add_scene_slice_plane`
-_PROBE_TOLERANCE = 3  # stop after this many missing indices in a row
-_DEFAULT_VERBOSITY = 2  # Polyscope's default; the app never changes it, so this is what we restore
+from ..document import Document
+from ..geom import load_trimesh
+
+POINTS_NAME = "points"
+CELLS_NAME = "blocks"
+GIZMO_NAME = "move axes"
+
+POINT_RADIUS = 0.01  # relative to the scene's bounding box, like every Polyscope radius
+
+SELECTED_COLOR = (0.95, 0.2, 0.2)
+POINT_COLOR = (1.0, 0.55, 0.1)
+
+# The move gizmo's world axes and their colours, dimmed when the constraint forbids them.
+AXIS_COLORS = ((1.0, 0.25, 0.25), (0.3, 0.85, 0.3), (0.35, 0.5, 1.0))
+DIM = 0.25
+GIZMO_SPAN = 0.1  # of the scene's extent, each way from the move centroid
+
+# blockMesh hexahedron sides, as indices into a cell's 8 points; a 4-point cell is its own
+# single quad. Keyed by cell size so a cell renders without asking what it is.
+CELL_SIDES = {
+    8: ((0, 1, 2, 3), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)),
+    4: ((0, 1, 2, 3),),
+}
 
 
-def _slice_plane(index):
-    """The scene slice plane at `index`, or None — a phantom name yields a handle whose access
-    raises (`get_slice_plane` itself only warns), so touching `get_center` is the real test."""
-    try:
-        plane = ps.get_slice_plane(f"{_SLICE_NAME}{index}")
-        plane.get_center()
-        return plane
-    except Exception:
-        return None
+def hex_faces(cells: list) -> tuple:
+    """`(vertices, faces)` for every cell's sides: each cell contributes its own points,
+    so `faces` addresses the returned array directly."""
+    vertices = [point.position for cell in cells for point in cell.points]
+    faces = [
+        [offset + corner for corner in side]
+        for offset, cell in zip(np.cumsum([0] + [len(c.points) for c in cells]), cells)
+        for side in CELL_SIDES[len(cell.points)]
+    ]
+    return (
+        np.asarray(vertices, dtype=float).reshape(-1, 3),
+        np.asarray(faces, dtype=int).reshape(-1, 4),
+    )
 
 
-def _slice_planes():
-    """Enumerate scene slice planes by probing their auto-names (polyscope has no list API),
-    stopping after a few consecutive misses. Verbosity is muted for the probe's duration so a
-    missing name doesn't spam an `[ERROR]` line to the console on every save, then restored."""
-    ps.set_verbosity(0)
-    try:
-        planes, index, misses = [], 0, 0
-        while misses < _PROBE_TOLERANCE:
-            plane = _slice_plane(index)
-            if plane is None:
-                misses += 1
-            else:
-                planes.append(plane)
-                misses = 0
-            index += 1
-        return planes
-    finally:
-        ps.set_verbosity(_DEFAULT_VERBOSITY)
+def sync(document: Document, selection=(), move=None) -> None:
+    """(Re)register every structure from the document's current state. `selection` is
+    coloured differently; `move`, when one is live, gets the axis gizmo."""
+    positions = np.asarray([point.position for point in document.points], dtype=float).reshape(
+        -1, 3
+    )
+    cloud = ps.register_point_cloud(POINTS_NAME, positions)
+    cloud.set_radius(POINT_RADIUS)
+    cloud.add_color_quantity("selection", _point_colors(document.points, selection), enabled=True)
+
+    vertices, faces = hex_faces(document.cells)
+    ps.register_surface_mesh(CELLS_NAME, vertices, faces)
+
+    for patch in document.patches:
+        _sync_backdrop(patch)
+
+    _sync_gizmo(move, document.extent)
 
 
-def capture():
-    """The savable scene state as a plain (picklable) dict for `model.save`."""
-    return {
-        "view": ps.get_view_as_json(),
-        "slice_planes": [
-            {
-                "center": [float(x) for x in plane.get_center()],
-                "normal": [float(x) for x in plane.get_normal()],
-                "enabled": plane.get_enabled(),
-                "draw_plane": plane.get_draw_plane(),
-                "draw_widget": plane.get_draw_widget(),
-            }
-            for plane in _slice_planes()
+def _point_colors(points: list, selection) -> np.ndarray:
+    """One colour per point: the selection stands out, everything else is uniform."""
+    selected = frozenset(selection)
+    return np.asarray(
+        [(SELECTED_COLOR if point in selected else POINT_COLOR) for point in points], dtype=float
+    ).reshape(-1, 3)
+
+
+def _sync_gizmo(move, extent: float) -> None:
+    """Three world axes through the move's centroid, drawn only while a move is live. An
+    axis the constraint permits is bright, the rest are dim -- so a `Shift+Z` plane lights
+    X and Y, an `X` constraint lights X alone, and a free move lights none."""
+    ps.remove_curve_network(GIZMO_NAME, error_if_absent=False)
+    for live in filter(None, [move]):
+        centre, reach = live.centroid, extent * GIZMO_SPAN
+        axes = np.eye(3) * reach
+        nodes = np.concatenate([centre - axes, centre + axes])
+        edges = np.asarray([[i, i + 3] for i in range(3)], dtype=int)
+        gizmo = ps.register_curve_network(GIZMO_NAME, nodes, edges)
+        gizmo.add_color_quantity(
+            "axes", _axis_colors(live.constraint), defined_on="edges", enabled=True
+        )
+
+
+def _axis_colors(constraint) -> np.ndarray:
+    return np.asarray(
+        [
+            np.asarray(color) * (1.0 if constraint.allows(axis) else DIM)
+            for axis, color in zip(np.eye(3), AXIS_COLORS)
         ],
-    }
+        dtype=float,
+    )
 
 
-def apply(scene):
-    """Restore a captured scene; a no-op for None (a fresh/legacy model)."""
-    if not scene:
-        return
-    ps.remove_all_slice_planes()
-    for spec in scene.get("slice_planes", []):
-        plane = ps.add_scene_slice_plane()
-        plane.set_pose(spec["center"], spec["normal"])
-        plane.set_draw_plane(spec["draw_plane"])
-        plane.set_draw_widget(spec["draw_widget"])
-        plane.set_enabled(spec["enabled"])
-    ps.set_view_from_json(scene["view"])  # last, so the camera is the final word
+def _sync_backdrop(patch) -> None:
+    """A patch's surface file, drawn as a reference mesh -- what points snap to and what
+    the topology is built against. A patch without a surface, or one whose file has moved,
+    contributes nothing: paths arrive by drag-and-drop, from the command line and from a
+    text field, so a bad one must not raise on every frame."""
+    for path in filter(os.path.exists, filter(None, [patch.surface])):
+        mesh = load_trimesh(path)
+        surface = ps.register_surface_mesh(f"surface::{patch.name}", mesh.vertices, mesh.faces)
+        surface.set_transparency(0.5)
