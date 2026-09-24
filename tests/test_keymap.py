@@ -26,4 +26,4 @@ def test_delete_is_not_bound_to_x_which_is_the_x_axis_constraint():
 def test_the_expected_operations_are_all_present():
     actions = {binding.action for binding in BINDINGS}
 
-    assert actions == {"place_point", "move", "make_block", "delete", "save"}
+    assert actions == {"place_point", "move", "duplicate", "make_block", "delete", "deselect", "work_plane", "save"}

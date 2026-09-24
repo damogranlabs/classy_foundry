@@ -103,6 +103,33 @@ polyscope every frame, and the camera is written back only while the puck is def
 ordinary mouse navigation and the puck cooperate — a mouse orbit simply carries the pivot
 along in front of the camera — and a still device never overrides the mouse.
 
+## The work plane
+
+Where a click lands, and what the scene is cut against. It is **polyscope's own slice
+plane**, not state of ours: polyscope already gives it a pose, a drawn grid, transparency,
+colour, a draggable widget and per-structure exemptions, so its pose is the single source
+of truth — dragging the widget, typing numbers and following the camera all write to the
+same place, and `WorkPlane.plane` hands it back as an ordinary `geom.Plane`.
+
+Three things are ours, because polyscope cannot know them:
+
+- **Follow or stay** (`W` when idle). Following lays it across the view at the pivot, which
+  is good for aiming; locked is what lets several points be placed *on one plane* — if it
+  rotated with the camera, coplanar points would be impossible.
+- **Numbers.** Origin and normal in the panel, live only while locked; typing into them
+  while following would be overwritten the next frame. Three buttons give XY/XZ/YZ.
+- **What may be cut.** Points and the move gizmo never are, or the plane would eat the very
+  things being placed.
+
+An **inactive slice plane cannot hold a pose** — polyscope parks it at infinity — so the
+plane is always active and "does it cut?" is expressed by exempting structures. That is why
+`scene.sync` returns its structures by name: the work plane needs them after every rebuild.
+
+During a move, `W` constrains onto the work plane *itself* (not a plane through the
+selection, as `X`/`Y`/`Z` do), so the points land on it. Snapping then traces where that
+plane cuts the reference surface — set the plane, constrain, hold Ctrl, and you are drawing
+along a section of the STL.
+
 ## The document
 
 The topology is an object graph in which **nothing above `storage.py` holds an index**.
@@ -158,16 +185,27 @@ X axis.
 
 | Key | Operation |
 |-----|-----------|
-| `P` | place a point — on the surface under the cursor, else the ground plane |
-| click / Shift+click | select a point / add to the selection |
+| `P` | place a point — on the surface under the cursor, else on the work plane |
+| `W` | work plane: follow the camera or stay put (during a move: constrain onto it) |
+| click / Shift+click | select a point **or a block** / add to the selection, or toggle it out |
+| click empty space | deselect everything (Shift+click on nothing keeps the selection) |
+| `Escape` | deselect everything (during a move it cancels the move instead) |
+| `C` | duplicate the selection and move the copies (Esc discards them) |
 | `G` | move the selection |
 | `X`/`Y`/`Z` | during a move: constrain to that axis |
 | `Shift+X/Y/Z` | during a move: constrain to the plane *excluding* that axis (`Shift+Z` = XY) |
 | Ctrl (held) | during a move: snap to the surface under the cursor |
 | `Esc` / click | during a move: cancel / confirm |
 | `B` | make a block from 8 selected points (or 4, for a sketch quad) |
-| `Delete` | delete the selection, and the blocks and patch faces using it |
+| `Delete` | delete selected blocks (their points stay), and selected points with the blocks and patch faces using them |
 | `Ctrl+S` | save |
+
+`C` exists because placing every point from scratch starts it wherever the ground plane
+is, which is never where it belongs; copying a point that is already right and nudging it
+is far less work. The copies go straight into the move modal, so they are never left
+stacked on their originals — confirming has moved them, and cancelling deletes them. The
+points a move *created* are tracked in `Editor.born`, which is empty for an ordinary move,
+so cancelling one discards nothing without needing to ask which kind it was.
 
 **Selection is an ordered list, not a set.** Click order is preserved and operations
 consume it in that order — that is what gives the user control over vertex ordering
@@ -185,12 +223,38 @@ window cannot drift from what the keys actually do. Adding an operation is one r
 | `Axis` | closest point on the axis to the ray | foot of the perpendicular | along the direction | its own axis, either way |
 
 Free move is not a special case: it is a `Plane` whose normal is the camera direction.
-**Snapping needs no geometry query** — `ps.pick` already returns the world position of the
-triangle under the cursor, so the move is `constraint.project(surface_hit)` when snapping
-and `constraint.from_ray(...)` otherwise. Snapping while constrained therefore stays
-constrained.
+**Snapping intersects the geometry itself**, in `geom.py`, rather than asking polyscope
+what is under the cursor: the point being dragged sits under the cursor, so a pick keeps
+returning *it* (or a block) instead of the reference surface, and the point jumps between
+the surface and the free solution. A trimesh ray cast costs about a millisecond and cannot
+be occluded by our own structures.
 
-**Two visual cues, and no more.** Selected points take a highlight colour (a per-point
+Each constraint decides what snapping *means*, so `solve` asks rather than branches:
+
+| constraint | snap target |
+|---|---|
+| `FreePlane` (a free move) | the ray's hit on the surface — the point slides over it |
+| `Plane` (`Shift+X/Y/Z`) | the **cross-section** that plane cuts, nearest point to the ray — so a drag traces it |
+| `Axis` (`X/Y/Z`) | the ray's surface hit, pulled back onto the axis |
+
+A plane snaps to segments of the section, not to its vertices: a coarse mesh has few, and
+snapping to those alone makes the cursor jump from corner to corner. The section is cut
+once and cached for the life of the constraint — a new constraint is built whenever the
+plane changes, so the cache cannot go stale. A snap that finds nothing falls back to the
+ordinary ray solution, so the point keeps following the mouse instead of freezing.
+
+**Blocks are selected by clicking them.** A pick reports the index of the face that was
+hit, and `cell_owners` -- the cell each rendered face belongs to, in the order `hex_faces`
+emits them -- turns that into the block, with no extra bookkeeping. Points are drawn on
+top, so a click near one takes the point and a click elsewhere on a block takes the block.
+Points and blocks share one click: a plain click starts a fresh selection of either kind,
+Shift adds to whatever is there — or toggles it back out. Clicking empty space deselects
+everything, but a Shift-click that hits nothing leaves the selection alone, since that is a
+slip of the hand rather than an instruction to start over. `Escape` deselects too, except
+during a move, where it cancels the move. Deleting a block leaves its points, since they are
+usually wanted for whatever replaces it; deleting a point still takes its blocks.
+
+**Two visual cues, and no more.** Selected points and selected blocks take a highlight colour (a per-point
 colour quantity on the cloud). While a move is live -- and only then -- an axis gizmo is
 drawn through the move's centroid: three world axes, each bright when the constraint
 *allows* travel along it and dim otherwise. That question is asked of the constraint

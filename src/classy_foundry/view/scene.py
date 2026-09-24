@@ -26,6 +26,9 @@ POINT_RADIUS = 0.01  # relative to the scene's bounding box, like every Polyscop
 SELECTED_COLOR = (0.95, 0.2, 0.2)
 POINT_COLOR = (1.0, 0.55, 0.1)
 
+CELL_COLOR = (0.55, 0.6, 0.68)
+SELECTED_CELL_COLOR = (0.95, 0.35, 0.25)
+
 # The move gizmo's world axes and their colours, dimmed when the constraint forbids them.
 AXIS_COLORS = ((1.0, 0.25, 0.25), (0.3, 0.85, 0.3), (0.35, 0.5, 1.0))
 DIM = 0.25
@@ -54,23 +57,31 @@ def hex_faces(cells: list) -> tuple:
     )
 
 
-def sync(document: Document, selection=(), move=None) -> None:
-    """(Re)register every structure from the document's current state. `selection` is
-    coloured differently; `move`, when one is live, gets the axis gizmo."""
+def sync(document: Document, selection=(), move=None, cells=()) -> dict:
+    """(Re)register every structure from the document's current state and return them by
+    name. Selected points and selected `cells` are coloured differently; `move`, when one is
+    live, gets the axis gizmo. The names are what the work plane uses to decide what it may
+    cut."""
     positions = np.asarray([point.position for point in document.points], dtype=float).reshape(
         -1, 3
     )
+    structures = {}
     cloud = ps.register_point_cloud(POINTS_NAME, positions)
+    structures[POINTS_NAME] = cloud
     cloud.set_radius(POINT_RADIUS)
     cloud.add_color_quantity("selection", _point_colors(document.points, selection), enabled=True)
 
     vertices, faces = hex_faces(document.cells)
-    ps.register_surface_mesh(CELLS_NAME, vertices, faces)
+    blocks = ps.register_surface_mesh(CELLS_NAME, vertices, faces)
+    blocks.add_color_quantity("selection", _cell_colors(document.cells, cells),
+                              defined_on="faces", enabled=True)
+    structures[CELLS_NAME] = blocks
 
     for patch in document.patches:
-        _sync_backdrop(patch)
+        structures.update(_sync_backdrop(patch))
 
-    _sync_gizmo(move, document.extent)
+    structures.update(_sync_gizmo(move, document.extent))
+    return structures
 
 
 def _point_colors(points: list, selection) -> np.ndarray:
@@ -81,7 +92,22 @@ def _point_colors(points: list, selection) -> np.ndarray:
     ).reshape(-1, 3)
 
 
-def _sync_gizmo(move, extent: float) -> None:
+def cell_owners(cells: list) -> list:
+    """The cell each rendered face belongs to, in the order `hex_faces` emits them -- so a
+    pick's face index says which block was clicked, with no extra bookkeeping."""
+    return [cell for cell in cells for _ in CELL_SIDES[len(cell.points)]]
+
+
+def _cell_colors(cells: list, selection) -> np.ndarray:
+    """One colour per rendered face: the selected blocks stand out."""
+    selected = frozenset(selection)
+    return np.asarray(
+        [(SELECTED_CELL_COLOR if cell in selected else CELL_COLOR) for cell in cell_owners(cells)],
+        dtype=float,
+    ).reshape(-1, 3)
+
+
+def _sync_gizmo(move, extent: float) -> dict:
     """Three world axes through the move's centroid, drawn only while a move is live. An
     axis the constraint permits is bright, the rest are dim -- so a `Shift+Z` plane lights
     X and Y, an `X` constraint lights X alone, and a free move lights none."""
@@ -95,6 +121,8 @@ def _sync_gizmo(move, extent: float) -> None:
         gizmo.add_color_quantity(
             "axes", _axis_colors(live.constraint), defined_on="edges", enabled=True
         )
+        return {GIZMO_NAME: gizmo}
+    return {}
 
 
 def _axis_colors(constraint) -> np.ndarray:
@@ -107,12 +135,15 @@ def _axis_colors(constraint) -> np.ndarray:
     )
 
 
-def _sync_backdrop(patch) -> None:
+def _sync_backdrop(patch) -> dict:
     """A patch's surface file, drawn as a reference mesh -- what points snap to and what
     the topology is built against. A patch without a surface, or one whose file has moved,
     contributes nothing: paths arrive by drag-and-drop, from the command line and from a
     text field, so a bad one must not raise on every frame."""
     for path in filter(os.path.exists, filter(None, [patch.surface])):
         mesh = load_trimesh(path)
-        surface = ps.register_surface_mesh(f"surface::{patch.name}", mesh.vertices, mesh.faces)
+        name = f"surface::{patch.name}"
+        surface = ps.register_surface_mesh(name, mesh.vertices, mesh.faces)
         surface.set_transparency(0.5)
+        return {name: surface}
+    return {}

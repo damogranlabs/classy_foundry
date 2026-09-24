@@ -8,7 +8,7 @@ import polyscope as ps
 import polyscope.imgui as psim
 import pytest
 
-from classy_foundry.navigation import CAMERA
+from classy_foundry.navigation import CAMERA, Sensitivity
 from classy_foundry.spacemouse import MOTION, SpaceMouse
 from classy_foundry.view.navigator import Navigator, draw_settings
 
@@ -26,8 +26,12 @@ def mock_polyscope():
 
 
 def a_navigator():
+    """The sensitivities are pinned positive: the ones in `navigation` are a user
+    preference and must not decide which way these tests expect the camera to go."""
     ours, daemon = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-    return Navigator(SpaceMouse(ours), distance=5.0), daemon
+    navigator = Navigator(SpaceMouse(ours), distance=5.0)
+    navigator.sensitivity = Sensitivity(pan=0.7, dolly=1.2, orbit=1.5)
+    return navigator, daemon
 
 
 def deflect(sock, *axes):

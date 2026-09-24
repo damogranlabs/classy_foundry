@@ -4,7 +4,7 @@ import numpy as np
 
 from classy_foundry.document import Document
 from classy_foundry.view import scene
-from classy_foundry.view.scene import _point_colors, hex_faces
+from classy_foundry.view.scene import _cell_colors, _point_colors, cell_owners, hex_faces
 
 
 def unit_cube(document: Document) -> list:
@@ -72,3 +72,43 @@ def test_an_empty_selection_colours_every_point_the_same():
     colors = _point_colors(points, [])
 
     assert np.allclose(colors, scene.POINT_COLOR)
+
+
+def test_every_rendered_face_knows_which_block_it_belongs_to():
+    """A pick reports a face index; this is how it becomes the block the user clicked."""
+    document = Document()
+    first = document.add_cell(unit_cube(document))
+    second = document.add_cell(unit_cube(document))
+
+    owners = cell_owners(document.cells)
+
+    assert len(owners) == 12                       # six sides each
+    assert owners[:6] == [first] * 6
+    assert owners[6:] == [second] * 6
+
+
+def test_a_quad_cell_owns_its_single_face():
+    document = Document()
+    quad = [document.add_point([x, y, 0]) for x, y in ((0, 0), (1, 0), (1, 1), (0, 1))]
+    cell = document.add_cell(quad)
+
+    assert cell_owners(document.cells) == [cell]
+
+
+def test_only_the_selected_blocks_take_the_highlight_colour():
+    document = Document()
+    first = document.add_cell(unit_cube(document))
+    document.add_cell(unit_cube(document))
+
+    colors = _cell_colors(document.cells, [first])
+
+    assert colors.shape == (12, 3)
+    assert np.allclose(colors[:6], scene.SELECTED_CELL_COLOR)
+    assert np.allclose(colors[6:], scene.CELL_COLOR)
+
+
+def test_with_nothing_selected_every_block_looks_the_same():
+    document = Document()
+    document.add_cell(unit_cube(document))
+
+    assert np.allclose(_cell_colors(document.cells, []), scene.CELL_COLOR)

@@ -26,17 +26,24 @@ BINDINGS = [
             "place_point"),
     Binding("G", "Move", "Move the selection; X/Y/Z for an axis, Shift+X/Y/Z for a plane, "
                          "digits for an exact offset, Ctrl to snap to a surface, Esc to cancel", "move"),
+    Binding("C", "Duplicate", "Copy the selected points and move the copies; Esc discards them, "
+                              "so nothing is ever left stacked on its original", "duplicate"),
     Binding("B", "Make block", "Build a block from 8 selected points (or 4, for a sketch quad), "
                                "in the order they were clicked", "make_block"),
-    Binding("Delete", "Delete", "Delete the selected points, and the blocks and patch faces that use them",
-            "delete"),
+    Binding("Delete", "Delete", "Delete the selected blocks (their points stay), and the selected "
+                                "points along with the blocks and patch faces using them", "delete"),
+    Binding("W", "Work plane", "Toggle whether the work plane follows the camera; during a move "
+                               "it constrains the points onto the work plane instead", "work_plane"),
+    Binding("Escape", "Deselect", "Clear the selection (during a move it cancels the move instead); "
+                                  "clicking empty space does the same", "deselect"),
     Binding("Ctrl+S", "Save", "Write the .shape file", "save"),
 ]
 
 # Key names above -> the imgui key the frame is tested against. Only plain keys appear
 # here; chords and Delete are handled by `pressed` below.
 _KEYS = {"P": psim.ImGuiKey_P, "G": psim.ImGuiKey_G, "B": psim.ImGuiKey_B,
-         "Delete": psim.ImGuiKey_Delete}
+         "C": psim.ImGuiKey_C, "W": psim.ImGuiKey_W, "Delete": psim.ImGuiKey_Delete,
+         "Escape": psim.ImGuiKey_Escape}
 
 
 def pressed(binding: Binding) -> bool:

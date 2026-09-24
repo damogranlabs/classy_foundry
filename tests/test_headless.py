@@ -166,6 +166,14 @@ def test_the_patch_panel_reports_a_surface_whose_file_has_gone(mock_polyscope):
     psim.End()
 
 
+def test_sync_colours_selected_blocks(mock_polyscope):
+    document = a_document()
+
+    scene.sync(document, cells=document.cells)
+
+    assert ps.has_surface_mesh(scene.CELLS_NAME)
+
+
 def test_placing_and_moving_points_needs_no_gpu(mock_polyscope):
     editor = Editor(Document())
     point = editor.place_point([0.0, 0.0, 0.0])
